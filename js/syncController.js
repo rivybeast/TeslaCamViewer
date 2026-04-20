@@ -18,6 +18,12 @@ class SyncController {
         this.CHECK_INTERVAL = 100; // Check every 100ms
         this.SYNC_INTERVAL = 30; // Only sync every 30 seconds of playback
         this.END_OF_CLIP_BUFFER = 5; // Don't sync in last 5 seconds of clip
+        // If drift exceeds this, something went catastrophically wrong
+        // (usually one decoder froze for seconds). Seeking all cameras back
+        // to the lagger's time would cause a huge backward jump and another
+        // round of buffering — strictly worse than just letting the lagger
+        // catch up on its own.
+        this.MAX_DRIFT_BEFORE_ABORT = 2.0;
 
         this.lastCheckTime = 0;
         this.lastSyncTime = 0; // Track when we last synced (in video time)
@@ -114,7 +120,16 @@ class SyncController {
         const maxTime = Math.max(...times);
         const drift = maxTime - minTime;
 
-        if (drift > this.DRIFT_THRESHOLD) {
+        if (drift > this.MAX_DRIFT_BEFORE_ABORT) {
+            // Catastrophic drift — a decoder likely stalled for seconds.
+            // Seeking everyone back to the lagger would yank playback
+            // backwards and trigger a second round of buffering. Don't.
+            // The lagging video's own canplay/playing events will clear
+            // its buffering state once its decoder catches up.
+            console.warn(`[SyncController] Abort resync: drift ${drift.toFixed(2)}s > ${this.MAX_DRIFT_BEFORE_ABORT}s — letting lagger catch up naturally`);
+            this.lastSyncTime = avgTime;
+            this.updateSyncStatus('drifted');
+        } else if (drift > this.DRIFT_THRESHOLD) {
             // Videos have drifted apart - resync
             this.resyncVideos(times);
             this.lastSyncTime = avgTime;

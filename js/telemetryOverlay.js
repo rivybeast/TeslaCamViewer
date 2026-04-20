@@ -958,6 +958,162 @@ class TelemetryOverlay {
     }
 
     /**
+     * Iterate every SEI frame across all loaded clips.
+     * build:sei47
+     * @returns {Array<Object>} flat array of frame objects
+     * @private
+     */
+    _allFrames() {
+        const all = [];
+        for (const data of this.clipSeiData.values()) {
+            if (data && Array.isArray(data.frames)) {
+                for (const f of data.frames) all.push(f);
+            }
+        }
+        return all;
+    }
+
+    /**
+     * Road Roughness Score — RMS of vertical (Z-axis) acceleration.
+     * Tesla's vertical accelerometer picks up potholes, speed bumps,
+     * and general road texture. Higher RMS = rougher roads.
+     * @returns {Object|null} { rms, rating, stars, sampleCount } or null if no data
+     */
+    getRoadRoughness() {
+        const frames = this._allFrames();
+        if (frames.length < 17) return null;
+
+        // Tesla's linear_acceleration_mps2_z is gravity-compensated — values
+        // cluster around 0 for smooth roads, spike on bumps. No need to
+        // subtract 9.80665 (that would inflate RMS by ~gravity regardless).
+        let sumSq = 0;
+        let count = 0;
+        for (const f of frames) {
+            const z = f.linear_acceleration_mps2_z;
+            if (typeof z === 'number' && Number.isFinite(z)) {
+                sumSq += z * z;
+                count++;
+            }
+        }
+        if (count === 0) return null;
+
+        const rms = Math.sqrt(sumSq / count);
+        console.log(`[TelemetryOverlay] Road roughness RMS: ${rms.toFixed(4)} m/s² (from ${count} samples)`);
+
+        // Calibrated for gravity-compensated Z-axis values typical of passenger cars
+        let rating, stars;
+        if (rms < 0.15) { rating = 'smooth'; stars = 5; }
+        else if (rms < 0.35) { rating = 'good'; stars = 4; }
+        else if (rms < 0.7) { rating = 'moderate'; stars = 3; }
+        else if (rms < 1.2) { rating = 'rough'; stars = 2; }
+        else { rating = 'very rough'; stars = 1; }
+
+        return { rms, rating, stars, sampleCount: count };
+    }
+
+    /**
+     * Autopilot Usage Stats — time spent in each AP state across the event.
+     * @returns {Object|null} { totalFrames, states: { NONE, FSD, AUTOSTEER, TACC }, percentActive, dominantState }
+     */
+    getAutopilotStats() {
+        const frames = this._allFrames();
+        if (frames.length === 0) return null;
+
+        const states = { NONE: 0, FSD: 0, AUTOSTEER: 0, TACC: 0 };
+        for (const f of frames) {
+            const name = f.autopilot_name || 'NONE';
+            if (states[name] !== undefined) states[name]++;
+            else states.NONE++;
+        }
+
+        const total = frames.length;
+        const active = states.FSD + states.AUTOSTEER + states.TACC;
+        const percentActive = (active / total) * 100;
+
+        let dominantState = 'NONE';
+        let dominantCount = states.NONE;
+        for (const [name, cnt] of Object.entries(states)) {
+            if (cnt > dominantCount) {
+                dominantState = name;
+                dominantCount = cnt;
+            }
+        }
+
+        return {
+            totalFrames: total,
+            states,
+            percentActive,
+            dominantState,
+            percentByState: {
+                NONE: (states.NONE / total) * 100,
+                FSD: (states.FSD / total) * 100,
+                AUTOSTEER: (states.AUTOSTEER / total) * 100,
+                TACC: (states.TACC / total) * 100
+            }
+        };
+    }
+
+    /**
+     * Recording Health — detect suspiciously short clips or frame_seq_no gaps.
+     * Tesla clips are normally ~60s × ~30fps ≈ 1800 frames. Short clips indicate
+     * recording was interrupted or restarted mid-event.
+     * @returns {Object} { isHealthy, shortClipCount, expectedFramesPerClip, details }
+     */
+    getRecordingHealth() {
+        const details = [];
+        let shortClipCount = 0;
+        const EXPECTED_FRAMES = 1800; // 60s × 30fps baseline
+        const SHORT_THRESHOLD = 900;   // Under 30s worth of frames = suspicious
+
+        for (const [key, data] of this.clipSeiData.entries()) {
+            if (!data || !Array.isArray(data.frames)) continue;
+            const fc = data.frames.length;
+            if (fc > 0 && fc < SHORT_THRESHOLD) {
+                shortClipCount++;
+                details.push({ clip: key, frameCount: fc });
+            }
+        }
+
+        return {
+            isHealthy: shortClipCount === 0,
+            shortClipCount,
+            expectedFramesPerClip: EXPECTED_FRAMES,
+            details
+        };
+    }
+
+    /**
+     * Combined compact insights string for the Event Info bar.
+     * Returns null if no SEI data is available for the current event.
+     * @returns {string|null}
+     */
+    getInsightsSummary() {
+        if (!this.hasTelemetryData()) return null;
+
+        const parts = [];
+
+        const roughness = this.getRoadRoughness();
+        if (roughness) {
+            const stars = '★'.repeat(roughness.stars) + '☆'.repeat(5 - roughness.stars);
+            parts.push(`Road: ${stars} (${roughness.rating})`);
+        }
+
+        const ap = this.getAutopilotStats();
+        if (ap && ap.percentActive > 0) {
+            const rounded = Math.round(ap.percentActive);
+            const dom = ap.dominantState !== 'NONE' ? ap.dominantState : 'AP';
+            parts.push(`${rounded}% on ${dom}`);
+        }
+
+        const health = this.getRecordingHealth();
+        if (!health.isHealthy) {
+            parts.push(`⚠ ${health.shortClipCount} short clip${health.shortClipCount === 1 ? '' : 's'}`);
+        }
+
+        return parts.length > 0 ? parts.join(' · ') : null;
+    }
+
+    /**
      * Update telemetry data for current playback time
      * @param {number} clipIndex - Current clip index
      * @param {number} timeInClip - Current time within the clip (seconds)

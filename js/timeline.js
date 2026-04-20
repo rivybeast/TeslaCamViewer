@@ -213,6 +213,11 @@ class Timeline {
             this.startDragging(e);
         });
 
+        // Scrub-preview thumbnail on hover
+        this.timeline.addEventListener('mousemove', (e) => this._handleThumbnailHover(e));
+        this.timeline.addEventListener('mouseenter', (e) => this._handleThumbnailHover(e));
+        this.timeline.addEventListener('mouseleave', () => this._hideThumbnailTooltip());
+
         document.addEventListener('mousemove', (e) => {
             if (this.isDragging) {
                 this.handleDrag(e);
@@ -1351,5 +1356,130 @@ class Timeline {
 
         // Update minimap markers
         this.renderMinimapMarkers();
+    }
+
+    // ----- Scrub-preview thumbnails (hover over timeline) -----
+
+    /**
+     * Map a client X coordinate inside the timeline to an event time in seconds,
+     * respecting zoom/pan state.
+     * @private
+     */
+    _clientXToEventTime(clientX) {
+        const rect = this.timeline.getBoundingClientRect();
+        const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+        const viewDuration = (this.totalDuration || 0) / (this.zoomLevel || 1);
+        return (this.viewStart || 0) + ratio * viewDuration;
+    }
+
+    _formatMmSs(seconds) {
+        const s = Math.max(0, Math.floor(seconds));
+        const m = Math.floor(s / 60);
+        const r = (s % 60).toString().padStart(2, '0');
+        return `${m}:${r}`;
+    }
+
+    _handleThumbnailHover(e) {
+        if (this.isDragging) return;
+        // Stash the latest cursor x; a single rAF-scheduled frame actually
+        // updates the tooltip. Prevents 200Hz mousemove events from each
+        // individually setting styles / textContent.
+        this._lastThumbHoverX = e.clientX;
+        if (this._thumbHoverRafPending) return;
+        this._thumbHoverRafPending = true;
+        requestAnimationFrame(() => {
+            this._thumbHoverRafPending = false;
+            this._processThumbnailHoverFrame();
+        });
+    }
+
+    _processThumbnailHoverFrame() {
+        const cache = window.app?.thumbnailCache;
+        const event = window.app?.currentEvent;
+        const x = this._lastThumbHoverX;
+        if (x == null || !cache || !event || !this.totalDuration) return;
+
+        const eventTime = this._clientXToEventTime(x);
+        const thumb = cache.getThumbnailAtTime(event, eventTime);
+        if (!thumb) {
+            this._hideThumbnailTooltip();
+            return;
+        }
+        this._showThumbnailTooltip(thumb, x, eventTime);
+    }
+
+    _ensureThumbnailTooltip() {
+        if (this._thumbnailTooltip) return this._thumbnailTooltip;
+        // Append to <body> with position:fixed so no ancestor overflow:hidden
+        // can clip it. Mousemove updates use transform for compositor-only work.
+        const tip = document.createElement('div');
+        tip.className = 'timeline-thumb-tooltip';
+        tip.innerHTML = `
+            <img class="timeline-thumb-img" alt="">
+            <div class="timeline-thumb-time"></div>
+        `;
+        document.body.appendChild(tip);
+        this._thumbnailTooltip = tip;
+        this._thumbnailTooltipImg = tip.querySelector('.timeline-thumb-img');
+        this._thumbnailTooltipTime = tip.querySelector('.timeline-thumb-time');
+        this._lastThumbUrl = null;
+        return tip;
+    }
+
+    _showThumbnailTooltip(thumb, clientX, eventTime) {
+        const tip = this._ensureThumbnailTooltip();
+
+        if (this._lastThumbUrl !== thumb.url) {
+            this._thumbnailTooltipImg.src = thumb.url;
+            this._lastThumbUrl = thumb.url;
+        }
+        // Only rewrite time text when the displayed second actually changes —
+        // avoids ~200/sec DOM mutations on rapid mouse movement.
+        const timeLabel = this._formatMmSs(eventTime);
+        if (this._lastThumbTimeLabel !== timeLabel) {
+            this._thumbnailTooltipTime.textContent = timeLabel;
+            this._lastThumbTimeLabel = timeLabel;
+        }
+
+        // Position in viewport coordinates via transform (compositor-only).
+        // Anchor above the timeline so the thumbnail appears where the user is
+        // pointing. Clamp horizontally so it never clips the viewport edge.
+        const rect = this.timeline.getBoundingClientRect();
+        const tipWidth = 240;
+        const tipHeight = 204; // image ~174 + timecode ~20 + padding
+        const gap = 10;
+
+        let x = clientX - tipWidth / 2;
+        x = Math.max(8, Math.min(x, window.innerWidth - tipWidth - 8));
+        const y = rect.top - tipHeight - gap;
+
+        tip.style.transform = `translate3d(${x}px, ${y}px, 0)`;
+        if (!this._thumbVisible) {
+            tip.style.opacity = '1';
+            tip.style.visibility = 'visible';
+            this._thumbVisible = true;
+        }
+    }
+
+    _hideThumbnailTooltip() {
+        if (!this._thumbnailTooltip || !this._thumbVisible) return;
+        this._thumbnailTooltip.style.opacity = '0';
+        this._thumbnailTooltip.style.visibility = 'hidden';
+        this._thumbVisible = false;
+    }
+
+    /**
+     * Reset the thumbnail tooltip state. Call when switching events so
+     * the previous event's preview doesn't linger on-screen until the
+     * user hovers again.
+     */
+    resetThumbnailTooltip() {
+        this._hideThumbnailTooltip();
+        this._lastThumbUrl = null;
+        this._lastThumbTimeLabel = null;
+        this._lastThumbHoverX = null;
+        if (this._thumbnailTooltipImg) {
+            this._thumbnailTooltipImg.removeAttribute('src');
+        }
     }
 }

@@ -49,6 +49,14 @@ class VideoPlayer {
             readSpeedEstimate: 0 // MB/s estimate
         };
 
+        // Debounce buffering UI notifications. Decode stalls shorter than this
+        // threshold are invisible to users (video catches up within a frame or
+        // two) and only generate UI flicker if surfaced. Real stalls lasting
+        // beyond this threshold still fire onBufferingChange normally.
+        this._bufferingUiDelayMs = 300;
+        this._bufferingStartTimer = null;
+        this._bufferingStartDispatched = false;
+
         // Video labels for ended state tracking
         this.videoLabels = {
             front: document.querySelector('#videoFront')?.parentElement?.querySelector('.video-label'),
@@ -88,15 +96,27 @@ class VideoPlayer {
 
             // Track buffering/stalling
             video.addEventListener('waiting', () => {
+                this._logBufferingDiagnostics(camera, video, 'waiting');
                 this.handleBufferingStart(camera);
             });
 
             video.addEventListener('stalled', () => {
+                this._logBufferingDiagnostics(camera, video, 'stalled');
                 this.handleBufferingStart(camera);
             });
 
             video.addEventListener('canplay', () => {
                 this.handleBufferingEnd(camera);
+            });
+
+            video.addEventListener('seeking', () => {
+                this._logBufferingDiagnostics(camera, video, 'seeking');
+            });
+
+            video.addEventListener('seeked', () => {
+                if (window.__tcvBufferDiag === true) {
+                    console.log(`[BufferDiag] ${camera}: seeked → currentTime=${video.currentTime.toFixed(3)}`);
+                }
             });
 
             // Track buffer progress for read speed estimation
@@ -559,30 +579,7 @@ class VideoPlayer {
                         console.warn(`Skipping empty file for duration: ${file.name}`);
                         duration = 60; // Default
                     } else {
-                        const video = document.createElement('video');
-                        const url = URL.createObjectURL(file);
-                        video.src = url;
-
-                        duration = await new Promise((resolve) => {
-                            const timeout = setTimeout(() => {
-                                console.warn(`Timeout getting duration for ${file.name}`);
-                                resolve(60); // Default on timeout
-                            }, 5000);
-
-                            video.onloadedmetadata = () => {
-                                clearTimeout(timeout);
-                                resolve(video.duration || 60);
-                            };
-                            video.onerror = () => {
-                                clearTimeout(timeout);
-                                console.warn(`Error loading metadata for ${file.name}`);
-                                resolve(60); // Default on error
-                            };
-                        });
-
-                        // Clean up: clear src before revoking URL
-                        video.src = '';
-                        URL.revokeObjectURL(url);
+                        duration = await this._probeClipDuration(file);
                     }
                 } catch (error) {
                     console.error('Error getting clip duration:', error);
@@ -596,6 +593,53 @@ class VideoPlayer {
 
         console.log(`[VideoPlayer] Cached ${this.cachedClipDurations.length} clip durations, total: ${total.toFixed(1)}s`);
         return total;
+    }
+
+    /**
+     * Probe a single clip's duration by briefly loading it in a throwaway
+     * <video> element. Retries once on transient failure — most metadata
+     * errors during event load are decoder/IO contention rather than
+     * actually corrupt files. Falls back to the 60s default if both
+     * attempts fail.
+     * @param {File} file
+     * @returns {Promise<number>}
+     * @private
+     */
+    async _probeClipDuration(file) {
+        const attempt = () => new Promise((resolve) => {
+            const video = document.createElement('video');
+            const url = URL.createObjectURL(file);
+            const cleanup = () => {
+                video.src = '';
+                URL.revokeObjectURL(url);
+            };
+            const timeout = setTimeout(() => { cleanup(); resolve({ ok: false, reason: 'timeout' }); }, 5000);
+            video.onloadedmetadata = () => {
+                clearTimeout(timeout);
+                const d = video.duration || 60;
+                cleanup();
+                resolve({ ok: true, duration: d });
+            };
+            video.onerror = () => {
+                clearTimeout(timeout);
+                cleanup();
+                resolve({ ok: false, reason: 'error' });
+            };
+            video.src = url;
+        });
+
+        let res = await attempt();
+        if (!res.ok) {
+            // Yield for a frame then retry — most transient failures come from
+            // brief decoder/IO pressure during concurrent event-load work.
+            await new Promise(r => setTimeout(r, 120));
+            res = await attempt();
+        }
+        if (!res.ok) {
+            console.warn(`Unable to probe duration for ${file.name} after retry (${res.reason}); using 60s default`);
+            return 60;
+        }
+        return res.duration;
     }
 
     /**
@@ -771,38 +815,113 @@ class VideoPlayer {
     }
 
     /**
-     * Handle buffering start for a camera
+     * Diagnostic logger — captures rich context at the moment a video reports
+     * a waiting/stalled/seeking event. Correlates with recent mouse activity
+     * so we can see whether buffering events are mouse-event-triggered or
+     * something else entirely (network stall, codec hitch, etc.).
+     *
+     * Off by default to keep the console clean. Enable with
+     * `window.__tcvBufferDiag = true` in DevTools before reproducing.
+     * @private
+     */
+    _logBufferingDiagnostics(camera, video, eventName) {
+        if (window.__tcvBufferDiag !== true) return;
+        // Track recent mouse activity globally — one listener for all cameras.
+        if (!VideoPlayer._diagMouseInit) {
+            VideoPlayer._diagMouseInit = true;
+            VideoPlayer._lastMouseAt = 0;
+            VideoPlayer._lastMouseTarget = null;
+            VideoPlayer._mouseSamples = [];
+            document.addEventListener('mousemove', (e) => {
+                VideoPlayer._lastMouseAt = performance.now();
+                VideoPlayer._lastMouseTarget = e.target;
+                VideoPlayer._mouseSamples.push(VideoPlayer._lastMouseAt);
+                // Keep last ~2s of samples
+                const cutoff = VideoPlayer._lastMouseAt - 2000;
+                while (VideoPlayer._mouseSamples.length > 0 && VideoPlayer._mouseSamples[0] < cutoff) {
+                    VideoPlayer._mouseSamples.shift();
+                }
+            }, { capture: true, passive: true });
+        }
+
+        const now = performance.now();
+        const msSinceMouse = VideoPlayer._lastMouseAt > 0 ? (now - VideoPlayer._lastMouseAt) : null;
+        const mouseRateLast2s = VideoPlayer._mouseSamples ? VideoPlayer._mouseSamples.length / 2 : 0;
+        const target = VideoPlayer._lastMouseTarget;
+        const targetDesc = target
+            ? `<${target.tagName.toLowerCase()}${target.id ? '#' + target.id : ''}${target.className && typeof target.className === 'string' ? '.' + target.className.split(' ').join('.') : ''}>`
+            : 'none';
+
+        const readyStateNames = ['HAVE_NOTHING', 'HAVE_METADATA', 'HAVE_CURRENT_DATA', 'HAVE_FUTURE_DATA', 'HAVE_ENOUGH_DATA'];
+        const networkStateNames = ['NETWORK_EMPTY', 'NETWORK_IDLE', 'NETWORK_LOADING', 'NETWORK_NO_SOURCE'];
+
+        console.log(
+            `[BufferDiag] ${camera}: ${eventName} @ t=${video.currentTime.toFixed(3)} ` +
+            `| ready=${readyStateNames[video.readyState] || video.readyState} ` +
+            `| net=${networkStateNames[video.networkState] || video.networkState} ` +
+            `| paused=${video.paused} ended=${video.ended} seeking=${video.seeking} ` +
+            `| isPlaying=${this.isPlaying} ` +
+            `| mouseAgo=${msSinceMouse != null ? msSinceMouse.toFixed(0) + 'ms' : 'n/a'} ` +
+            `| rate=${mouseRateLast2s.toFixed(1)}/s ` +
+            `| over=${targetDesc}`
+        );
+    }
+
+    /**
+     * Handle buffering start for a camera.
+     * Internal state updates immediately but the user-facing
+     * onBufferingChange callback is debounced by _bufferingUiDelayMs so that
+     * brief decode stalls (common under CSS repaint pressure from mouse hover)
+     * don't flash the "Buffering" indicator.
      * @param {string} camera
      */
     handleBufferingStart(camera) {
         if (!this.isPlaying) return; // Only track during playback
 
-        const wasBuffering = this.bufferingState.isBuffering;
         this.bufferingState.bufferingCameras.add(camera);
         this.bufferingState.isBuffering = true;
 
-        if (!wasBuffering && this.onBufferingChange) {
-            this.onBufferingChange({
-                isBuffering: true,
-                cameras: Array.from(this.bufferingState.bufferingCameras),
-                bufferHealth: this.bufferingState.bufferHealth,
-                readSpeed: this.bufferingState.readSpeedEstimate
-            });
+        // Schedule the UI notification if none is pending and we haven't
+        // already dispatched for this stall episode.
+        if (!this._bufferingStartTimer && !this._bufferingStartDispatched) {
+            this._bufferingStartTimer = setTimeout(() => {
+                this._bufferingStartTimer = null;
+                // Re-check: only dispatch if we're still actually buffering
+                if (this.bufferingState.isBuffering && this.onBufferingChange) {
+                    this._bufferingStartDispatched = true;
+                    this.onBufferingChange({
+                        isBuffering: true,
+                        cameras: Array.from(this.bufferingState.bufferingCameras),
+                        bufferHealth: this.bufferingState.bufferHealth,
+                        readSpeed: this.bufferingState.readSpeedEstimate
+                    });
+                }
+            }, this._bufferingUiDelayMs);
         }
     }
 
     /**
-     * Handle buffering end for a camera
+     * Handle buffering end for a camera.
+     * Cancels a pending debounced start if the stall resolved before it
+     * would have surfaced. Fires the end callback only if start was
+     * actually dispatched.
      * @param {string} camera
      */
     handleBufferingEnd(camera) {
         this.bufferingState.bufferingCameras.delete(camera);
 
         if (this.bufferingState.bufferingCameras.size === 0) {
-            const wasBuffering = this.bufferingState.isBuffering;
             this.bufferingState.isBuffering = false;
 
-            if (wasBuffering && this.onBufferingChange) {
+            // Stall resolved before debounce fired — silently cancel.
+            if (this._bufferingStartTimer) {
+                clearTimeout(this._bufferingStartTimer);
+                this._bufferingStartTimer = null;
+            }
+
+            // Only fire end callback if start was actually surfaced.
+            if (this._bufferingStartDispatched && this.onBufferingChange) {
+                this._bufferingStartDispatched = false;
                 this.onBufferingChange({
                     isBuffering: false,
                     cameras: [],

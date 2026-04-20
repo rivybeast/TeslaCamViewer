@@ -22,6 +22,11 @@ class SeiExtractor {
 
         // Autopilot state enum mapping
         this.AP_NAMES = ['NONE', 'FSD', 'AUTOSTEER', 'TACC'];
+
+        // Unknown SEI field tracking — any field number > 16 (outside published schema).
+        // Future-proofs against Tesla firmware schema changes; surfaced via Diagnostics.
+        this.unknownFieldStats = new Map();
+        this.UNKNOWN_FIELD_SAMPLE_CAP = 17;
     }
 
     /**
@@ -462,11 +467,14 @@ class SeiExtractor {
                     valueRead = true;
                 }
             } else if (wireType === 2) {
-                // Length-delimited (skip)
+                // Length-delimited (string, bytes, or nested message) — skip contents,
+                // but capture the declared length so unknown sub-messages get tracked.
                 const lenVarint = this._readVarint(payload, pos);
                 if (!lenVarint) { parseError = true; }
                 else {
+                    value = lenVarint.value;
                     pos = lenVarint.pos + lenVarint.value;
+                    valueRead = true;
                 }
             } else {
                 // Unknown wire type - skip this byte and continue
@@ -499,6 +507,13 @@ class SeiExtractor {
                 case 14: result.linear_acceleration_mps2_x = value; break;
                 case 15: result.linear_acceleration_mps2_y = value; break;
                 case 16: result.linear_acceleration_mps2_z = value; break;
+                default:
+                    // Field number not in published Tesla schema (1–16).
+                    // Track for future-proofing — surface via getUnknownFieldStats().
+                    if (valueRead) {
+                        this._trackUnknownField(fieldNumber, wireType, value);
+                    }
+                    break;
             }
         }
 
@@ -744,6 +759,110 @@ class SeiExtractor {
      */
     clearCache() {
         this.cache.clear();
+    }
+
+    /**
+     * Record an observation of an unknown SEI field.
+     * Tesla's public schema defines fields 1–16. Anything higher is new territory.
+     * build:sei47
+     * @param {number} fieldNumber - Protobuf field number (>16)
+     * @param {number} wireType - Protobuf wire type (0, 1, 2, or 5)
+     * @param {*} value - Field value (numeric for wire types 0/1/5, length for type 2)
+     * @private
+     */
+    _trackUnknownField(fieldNumber, wireType, value) {
+        let stats = this.unknownFieldStats.get(fieldNumber);
+        if (!stats) {
+            stats = {
+                fieldNumber,
+                wireType,
+                count: 0,
+                samples: [],
+                min: Infinity,
+                max: -Infinity,
+                mean: 0,
+                M2: 0,
+                firstSeenAt: Date.now(),
+                lastSeenAt: Date.now(),
+                gps_suspicion: false
+            };
+            this.unknownFieldStats.set(fieldNumber, stats);
+        }
+
+        const numValue = typeof value === 'bigint' ? Number(value) : value;
+        if (typeof numValue === 'number' && Number.isFinite(numValue)) {
+            stats.count++;
+            if (numValue < stats.min) stats.min = numValue;
+            if (numValue > stats.max) stats.max = numValue;
+
+            // Welford's online algorithm for mean + variance — numerically stable
+            // for incremental updates without storing every value.
+            const delta = numValue - stats.mean;
+            stats.mean += delta / stats.count;
+            const delta2 = numValue - stats.mean;
+            stats.M2 += delta * delta2;
+
+            stats.samples.push(numValue);
+            if (stats.samples.length > this.UNKNOWN_FIELD_SAMPLE_CAP) {
+                stats.samples.shift();
+            }
+
+            // GPS-suspicion guard: 64-bit doubles whose magnitude looks like a
+            // coordinate. Diagnostics layer uses this to exclude raw values from
+            // outbound reports to protect user location privacy.
+            if (wireType === 1 && Math.abs(numValue) <= 180) {
+                stats.gps_suspicion = true;
+            }
+        } else {
+            stats.count++;
+        }
+
+        stats.lastSeenAt = Date.now();
+    }
+
+    /**
+     * Human-readable name for a protobuf wire type.
+     * @private
+     */
+    _getWireTypeName(wireType) {
+        switch (wireType) {
+            case 0: return 'varint';
+            case 1: return '64-bit';
+            case 2: return 'length-delimited';
+            case 5: return '32-bit';
+            default: return 'unknown';
+        }
+    }
+
+    /**
+     * Get aggregated stats on unknown SEI fields seen during this session.
+     * Consumed by SEI Diagnostics to notify users of potential new Tesla telemetry
+     * fields and to generate sanitized crowd-sourced reports.
+     * @returns {Array<Object>} Per-field stat objects
+     */
+    getUnknownFieldStats() {
+        return Array.from(this.unknownFieldStats.values()).map(s => ({
+            fieldNumber: s.fieldNumber,
+            wireType: s.wireType,
+            wireTypeName: this._getWireTypeName(s.wireType),
+            count: s.count,
+            samples: s.samples.slice(),
+            min: s.min === Infinity ? null : s.min,
+            max: s.max === -Infinity ? null : s.max,
+            mean: s.count > 0 ? s.mean : null,
+            stddev: s.count > 1 ? Math.sqrt(s.M2 / (s.count - 1)) : null,
+            firstSeenAt: s.firstSeenAt,
+            lastSeenAt: s.lastSeenAt,
+            gps_suspicion: s.gps_suspicion
+        }));
+    }
+
+    /**
+     * Clear accumulated unknown field stats. Useful for resetting between
+     * different test corpora or for privacy-conscious users.
+     */
+    resetUnknownFieldStats() {
+        this.unknownFieldStats.clear();
     }
 }
 

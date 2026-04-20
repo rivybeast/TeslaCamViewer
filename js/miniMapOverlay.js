@@ -1166,11 +1166,11 @@ class MiniMapOverlay {
     async preCacheTilesForExport(positions) {
         const zoom = 16;
         const tilesToFetch = new Set();
+        this._warnedEmptyTileCache = false;
 
         for (const pos of positions) {
             if (!pos.lat || !pos.lng) continue;
             const centerTile = this._latLngToTile(pos.lat, pos.lng, zoom);
-            // Add 3x3 grid around each position
             for (let dy = -1; dy <= 1; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
                     tilesToFetch.add(`${centerTile.x + dx},${centerTile.y + dy}`);
@@ -1178,15 +1178,26 @@ class MiniMapOverlay {
             }
         }
 
-        // Fetch all unique tiles
+        const failures = [];
         const fetchPromises = [];
         for (const key of tilesToFetch) {
             const [x, y] = key.split(',').map(Number);
-            fetchPromises.push(this._fetchTile(x, y, zoom).catch(() => null));
+            fetchPromises.push(
+                this._fetchTile(x, y, zoom).catch(err => {
+                    failures.push({ x, y, error: err?.message || String(err) });
+                    return null;
+                })
+            );
         }
 
-        await Promise.all(fetchPromises);
-        console.log(`[MiniMap] Pre-cached ${tilesToFetch.size} tiles for export`);
+        const results = await Promise.all(fetchPromises);
+        const succeeded = results.filter(r => r).length;
+        const requested = tilesToFetch.size;
+        const providerUrl = this._getDirectTileUrl(0, 0, zoom).replace(/\/0\/0\/0/, '/{z}/{x}/{y}');
+        console.log(`[MiniMap] Pre-cached ${succeeded}/${requested} tiles for export (provider: ${providerUrl})`);
+        if (failures.length > 0) {
+            console.warn(`[MiniMap] Unable to fetch ${failures.length} tile(s) — export will show background color where tiles are missing:`, failures.slice(0, 3));
+        }
     }
 
     /**
@@ -1247,16 +1258,28 @@ class MiniMapOverlay {
         }
 
         // Draw cached tiles (synchronous - no waiting)
+        let drawn = 0;
         tilesToDraw.forEach(t => {
             const img = this._getCachedTile(t.tileX, t.tileY, zoom);
             if (img) {
                 ctx.drawImage(img, t.drawX, t.drawY, scaledTileSize, scaledTileSize);
+                drawn++;
             }
         });
+        if (drawn === 0 && !this._warnedEmptyTileCache) {
+            this._warnedEmptyTileCache = true;
+            console.warn('[MiniMap] drawToCanvas ran with 0 cached tiles — mini-map will render as background color only. If preCacheTilesForExport logged failures, that is the cause.');
+        }
 
-        // Draw semi-transparent overlay for better contrast
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
-        ctx.fillRect(x, y, mapWidth, mapHeight);
+        // Semi-transparent contrast overlay on top of the tiles. Only useful in
+        // light mode — in dark mode the tiles are already near-black, so a 20%
+        // black overlay compounds to effectively solid black and hides the map
+        // entirely (especially visible in Sentry exports with no trail drawn
+        // over the top to break up the solid black).
+        if (!this.isDarkMode) {
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.fillRect(x, y, mapWidth, mapHeight);
+        }
 
         ctx.restore(); // End clipping
 

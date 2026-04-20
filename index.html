@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-    <link rel="stylesheet" href="styles/main.css?v=40">
+    <link rel="stylesheet" href="styles/main.css?v=52">
     <link rel="stylesheet" href="styles/plate-enhancer.css?v=8">
 </head>
 <body>
@@ -94,6 +94,12 @@
                 <!-- Drive Selector (multi-drive support) -->
                 <div id="driveSelector" class="drive-selector hidden">
                     <div class="drive-selector-header">
+                        <button id="refreshDrivesBtn" class="drive-action-btn" title="Rescan drives for new events">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                                <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                            </svg>
+                        </button>
                         <select id="driveSelect" class="drive-select">
                             <option value="" data-i18n="sidebar.allDrives">All Drives</option>
                         </select>
@@ -108,8 +114,11 @@
                             </svg>
                         </button>
                         <button id="syncDrivesBtn" class="drive-action-btn sync-drives-btn" data-i18n-title="sidebar.syncDrives" title="Sync between drives" disabled>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                                <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="17 1 21 5 17 9"/>
+                                <path d="M3 11V9a4 4 0 0 1 4-4h14"/>
+                                <polyline points="7 23 3 19 7 15"/>
+                                <path d="M21 13v2a4 4 0 0 1-4 4H3"/>
                             </svg>
                         </button>
                     </div>
@@ -288,6 +297,7 @@
                         <span id="eventReason" class="event-reason"></span>
                         <span id="eventWeather" class="event-weather"></span>
                         <span id="speedLimitDisplay" class="speed-limit-display" title="Speed Limit"></span>
+                        <span id="eventInsights" class="event-insights" title="Derived from SEI telemetry"></span>
                     </div>
                     <button id="notesBtn" class="event-info-notes-btn" disabled data-i18n-title="notes.title" title="Notes & Tags (N)">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
@@ -799,6 +809,12 @@
     <!-- tweetnacl for Ed25519 signature verification fallback -->
     <script src="vendor/nacl-fast.min.js"></script>
 
+    <!-- Diagnostics logger (load very early to capture console from app start) -->
+    <script src="js/diagnosticsLogger.js?v=1"></script>
+
+    <!-- Background scheduler — orchestrates non-critical work tiers -->
+    <script src="js/backgroundScheduler.js?v=1"></script>
+
     <!-- i18n (load first) -->
     <script src="js/i18n.js?v=2"></script>
 
@@ -810,18 +826,22 @@
     <script src="js/folderManager.js"></script>
     <script src="js/folderParser.js?v=3"></script>
     <script src="js/eventBrowser.js?v=3"></script>
-    <script src="js/videoPlayer.js?v=4"></script>
-    <script src="js/timeline.js?v=2"></script>
-    <script src="js/syncController.js"></script>
+    <script src="js/videoPlayer.js?v=9"></script>
+    <script src="js/thumbnailCache.js?v=6"></script>
+    <script src="js/commandPalette.js?v=1"></script>
+    <script src="js/fileSystemObserver.js?v=3"></script>
+    <script src="js/timeline.js?v=8"></script>
+    <script src="js/syncController.js?v=2"></script>
     <script src="js/layoutConfig.js?v=3"></script>
     <script src="js/layoutRenderer.js?v=7"></script>
     <script src="js/layoutManager.js?v=10"></script>
     <script src="js/layoutEditor.js?v=2"></script>
     <script src="js/screenshotCapture.js?v=6"></script>
     <script src="js/videoEnhancer.js"></script>
-    <script src="js/seiExtractor.js"></script>
-    <script src="js/telemetryOverlay.js?v=10"></script>
-    <script src="js/miniMapOverlay.js?v=16"></script>
+    <script src="js/seiExtractor.js?v=3"></script>
+    <script src="js/seiDiagnostics.js?v=3"></script>
+    <script src="js/telemetryOverlay.js?v=11"></script>
+    <script src="js/miniMapOverlay.js?v=18"></script>
     <script src="js/weatherService.js"></script>
     <script src="js/elevationService.js?v=2"></script>
     <script src="js/speedLimitService.js?v=7"></script>
@@ -832,15 +852,16 @@
     <script src="js/streetViewOverlay.js?v=2"></script>
     <script src="js/eventDataBackup.js"></script>
     <script src="js/notesManager.js?v=1"></script>
-    <script src="js/videoExport.js?v=27"></script>
+    <script src="js/videoExport.js?v=35"></script>
+    <script src="js/videoExportFast.js?v=2"></script>
     <script src="js/clipMarking.js"></script>
     <script src="js/insuranceReport.js?v=11"></script>
-    <script src="js/settingsManager.js?v=12"></script>
-    <script src="js/versionManager.js?v=17"></script>
+    <script src="js/settingsManager.js?v=13"></script>
+    <script src="js/versionManager.js?v=23"></script>
     <script src="js/statisticsManager.js?v=1"></script>
     <script src="js/helpModal.js?v=6"></script>
     <script src="js/quickStartGuide.js?v=3"></script>
-    <script src="js/offlinePackager.js?v=1"></script>
+    <script src="js/offlinePackager.js?v=2"></script>
     <script src="js/driveSync.js?v=4"></script>
     <script src="js/driveSyncUI.js?v=2"></script>
     <script src="js/regionTracker.js?v=5"></script>
@@ -849,6 +870,6 @@
     <script src="js/plateEnhancer.js?v=90"></script>
     <script src="js/plateDetector.js?v=13"></script>
     <script src="js/plateBlur.js?v=17"></script>
-    <script src="js/app.js?v=40"></script>
+    <script src="js/app.js?v=42"></script>
 </body>
 </html>

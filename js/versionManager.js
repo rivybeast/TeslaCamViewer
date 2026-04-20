@@ -19,12 +19,69 @@ class VersionManager {
 
         // Current version - UPDATE THIS when releasing new features
         // Format: Year.Week.DayOfWeek.Release
-        this.currentVersion = '2026.16.5.1';
+        this.currentVersion = '2026.17.1.1';
 
         // Changelog with feature identifiers for "what's new" dots
         // Each entry has: version, date, title, and features array
         // Features have: id (for tracking seen state), text, elementSelector (optional)
         this.changelog = [
+            {
+                version: '2026.17.1.1',
+                date: '2026-04-20',
+                title: 'Command Palette, Scrub Previews, Drive Auto-Refresh, Troubleshooting Panel',
+                features: [
+                    {
+                        id: 'command-palette',
+                        text: 'Press Ctrl+K (Cmd+K on Mac) to open a searchable command palette — ~25 common actions (playback, layouts, export, overlays, navigation) plus free-text search across loaded events.',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'scrub-preview-thumbnails',
+                        text: 'Hovering the timeline now shows a multi-camera thumbnail preview (2×2 grid, or 3×2 on pillar-cam vehicles). Generation runs in the background and won\'t slow down playback.',
+                        elementSelector: '#timeline'
+                    },
+                    {
+                        id: 'drive-auto-refresh',
+                        text: 'Drives auto-refresh when new clips appear — native filesystem events where supported, plus a 30-second polling fallback. No more manually clicking refresh after Sentry saves a new event.',
+                        elementSelector: '#refreshDrivesBtn'
+                    },
+                    {
+                        id: 'troubleshooting-panel',
+                        text: 'New Diagnostics → Troubleshooting section (in Settings) captures recent console logs and exposes debug flag toggles. Copy / Download / Preview buttons make it easy to share a sanitized report without opening DevTools.',
+                        elementSelector: ['#settingsBtn', '.settings-nav-item[data-tab="diagnostics"]']
+                    },
+                    {
+                        id: 'event-insights',
+                        text: 'Event Insights: short, auto-generated observations about each event (derived from SEI telemetry) appear next to the event header.',
+                        elementSelector: '#eventInsights'
+                    },
+                    {
+                        id: 'fast-export-toggle',
+                        text: 'Experimental Fast Export toggle in Settings → Export. Uses a streamlined render path for large exports — try it when standard export feels slow.',
+                        elementSelector: ['#settingsBtn', '.settings-nav-item[data-tab="export"]', '#setting-fastExportExperimental']
+                    },
+                    {
+                        id: 'sei-unknown-scanner',
+                        text: 'SEI Unknown-Field Scanner: flags previously-unseen telemetry fields in your clips and offers a crowd-sourced report (review before sharing — all values are scrubbed of paths, GPS, and plate-shaped strings). Lives in Settings → Diagnostics (same place as Troubleshooting).',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'export-eta-smoothing',
+                        text: 'Video export ETA no longer jumps at the Phase 1 → Phase 2 transition — now uses an 8-second sliding window with a light EMA so the countdown climbs and descends smoothly.',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'hover-buffer-fix',
+                        text: 'Fixed playback stutter and multi-second backward jumps that happened when moving the mouse over the control panel during playback (main-thread contention was starving the video scheduler).',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'camera-hide-fix',
+                        text: 'Hiding a camera in the layout now correctly hides it from both live view and exports.',
+                        elementSelector: null
+                    }
+                ]
+            },
             {
                 version: '2026.16.5.1',
                 date: '2026-04-17',
@@ -572,9 +629,14 @@ class VersionManager {
 
         this.state = this.loadState();
         this.modal = null;
-        this.indicators = new Map(); // Track indicator elements
+        // featureId -> { dots: HTMLElement[], cleanups: Function[] }
+        this.indicators = new Map();
+        // [{ featureId, selector, text, isLast }] — selectors whose element
+        // isn't in the DOM yet (e.g. Settings modal nav items). Watched by a
+        // MutationObserver and dotted as soon as they appear.
+        this.pendingSelectors = [];
+        this._mutationObserver = null;
 
-        // Check for version upgrade
         this.checkVersionUpgrade();
     }
 
@@ -618,12 +680,27 @@ class VersionManager {
         const lastVersion = this.state.lastSeenVersion;
 
         if (!lastVersion) {
-            // First visit ever
+            // First visit ever. Don't overwhelm with 10 years of changelog
+            // history, but still highlight what's new in the CURRENT release so
+            // new users can discover recent features. Mark features from older
+            // versions as seen; leave current-version features unseen so they
+            // get blue dots, the has-updates version tag, and the What's New
+            // modal just like upgrading users do.
             this.state.firstVisit = true;
             this.state.lastSeenVersion = this.currentVersion;
-            // Mark all features as seen for first-time users (don't overwhelm them)
-            this.markAllFeaturesSeen();
+            for (const entry of this.changelog) {
+                if (entry.version === this.currentVersion) continue;
+                for (const feature of entry.features) {
+                    if (!this.state.seenFeatures.includes(feature.id)) {
+                        this.state.seenFeatures.push(feature.id);
+                    }
+                }
+            }
             this.saveState();
+
+            if (this.state.showWhatsNew) {
+                setTimeout(() => this.showUpgradeNotification(), 1500);
+            }
             return;
         }
 
@@ -737,95 +814,210 @@ class VersionManager {
      * @param {string} featureId - Feature ID for tracking
      * @param {string} featureText - Feature description for tooltip
      */
-    addIndicator(element, featureId, featureText = 'New feature!') {
+    addIndicator(element, featureId, featureText = 'New feature!', isLast = true) {
         if (!element || !this.isFeatureNew(featureId)) return;
-        if (this.indicators.has(featureId)) return; // Already added
 
         // Replaced/void elements can't hold arbitrary DOM children — browsers
         // silently drop them. Fall back to the parent container so the dot
         // actually renders. Applies to select, input, textarea, img, etc.
-        const hostingTag = element.tagName;
         const nonContainerTags = new Set(['SELECT', 'INPUT', 'TEXTAREA', 'IMG', 'VIDEO', 'AUDIO', 'IFRAME']);
         let anchor = element;
-        if (nonContainerTags.has(hostingTag) && element.parentElement) {
+        if (nonContainerTags.has(element.tagName) && element.parentElement) {
             anchor = element.parentElement;
         }
 
-        // Create indicator dot with tooltip
         const dot = document.createElement('span');
         dot.className = 'whats-new-dot';
         dot.dataset.featureId = featureId;
-        dot.dataset.tooltip = featureText;
 
-        // Position relative to the anchor (not parent) so the dot floats over it
         if (getComputedStyle(anchor).position === 'static') {
             anchor.style.position = 'relative';
         }
-
-        // Insert dot directly into the anchor
         anchor.appendChild(dot);
 
-        // Adaptive tooltip positioning
-        const rect = element.getBoundingClientRect();
-        // Show tooltip on right for left-edge elements
-        if (rect.left < 350) {
-            dot.classList.add('tooltip-right');
-        }
-        // Show tooltip below for top-edge elements
-        if (rect.top < 120) {
-            dot.classList.add('tooltip-below');
-        }
-        // Show tooltip above for bottom-edge elements
-        else if (rect.bottom > window.innerHeight - 150) {
-            dot.classList.add('tooltip-above');
-        }
-        this.indicators.set(featureId, dot);
+        // Tooltip renders on document.body to escape ancestor stacking contexts
+        // and overflow:hidden clipping; position is clamped to the viewport.
+        const showTip = () => {
+            let tip = document.getElementById('whats-new-tooltip-instance');
+            if (!tip) {
+                tip = document.createElement('div');
+                tip.id = 'whats-new-tooltip-instance';
+                tip.className = 'whats-new-tooltip';
+                document.body.appendChild(tip);
+            }
+            tip.textContent = featureText;
+            tip.style.visibility = 'hidden';
+            tip.style.left = '0px';
+            tip.style.top = '0px';
+            tip.style.display = 'block';
 
-        // Add click listener to element to mark as seen
-        const markSeen = () => {
-            this.markFeatureSeen(featureId);
-            element.removeEventListener('click', markSeen);
+            const dotRect = dot.getBoundingClientRect();
+            const tipRect = tip.getBoundingClientRect();
+            const pad = 8;
+            const vw = window.innerWidth;
+            const vh = window.innerHeight;
+
+            let top = dotRect.bottom + pad;
+            if (top + tipRect.height > vh - pad) top = dotRect.top - tipRect.height - pad;
+            if (top < pad) top = pad;
+
+            let left = dotRect.left + dotRect.width / 2 - tipRect.width / 2;
+            if (left + tipRect.width > vw - pad) left = vw - pad - tipRect.width;
+            if (left < pad) left = pad;
+
+            tip.style.top = top + 'px';
+            tip.style.left = left + 'px';
+            tip.style.visibility = 'visible';
         };
-        element.addEventListener('click', markSeen);
+        const hideTip = () => {
+            const tip = document.getElementById('whats-new-tooltip-instance');
+            if (tip) tip.remove();
+        };
+        dot.addEventListener('mouseenter', showTip);
+        dot.addEventListener('mouseleave', hideTip);
+        dot._hideTip = hideTip;
+
+        // Suppress the anchor's native browser tooltip while hovering the dot —
+        // otherwise title="…" text renders on top of our custom tooltip.
+        const titleSuppress = () => {
+            const t = anchor.getAttribute('title');
+            if (t != null) {
+                anchor.dataset._savedTitle = t;
+                anchor.removeAttribute('title');
+            }
+        };
+        const titleRestore = () => {
+            if (anchor.dataset._savedTitle != null) {
+                anchor.setAttribute('title', anchor.dataset._savedTitle);
+                delete anchor.dataset._savedTitle;
+            }
+        };
+        dot.addEventListener('mouseenter', titleSuppress);
+        dot.addEventListener('mouseleave', titleRestore);
+
+        const entry = this.indicators.get(featureId) || { dots: [], cleanups: [] };
+        entry.dots.push(dot);
+
+        // Only the INNERMOST dot's anchor clicks mark the feature seen — outer
+        // breadcrumb clicks just navigate deeper without dismissing the trail.
+        if (isLast) {
+            const markSeen = () => {
+                this.markFeatureSeen(featureId);
+                element.removeEventListener('click', markSeen);
+            };
+            element.addEventListener('click', markSeen);
+            entry.cleanups.push(() => element.removeEventListener('click', markSeen));
+        }
+
+        this.indicators.set(featureId, entry);
     }
 
     /**
-     * Remove indicator for a feature
+     * Remove indicator for a feature (all dots in its breadcrumb chain)
      */
     removeIndicator(featureId) {
-        const dot = this.indicators.get(featureId);
-        if (dot && dot.parentElement) {
-            dot.parentElement.removeChild(dot);
+        const entry = this.indicators.get(featureId);
+        if (entry) {
+            for (const dot of entry.dots) {
+                if (dot._hideTip) dot._hideTip();
+                if (dot.parentElement) dot.parentElement.removeChild(dot);
+            }
+            for (const cleanup of entry.cleanups) cleanup();
         }
         this.indicators.delete(featureId);
+        // Also drop any pending selectors for this feature
+        this.pendingSelectors = this.pendingSelectors.filter(p => p.featureId !== featureId);
     }
 
     /**
      * Remove all indicators
      */
     removeAllIndicators() {
-        for (const [featureId, dot] of this.indicators) {
-            if (dot && dot.parentElement) {
-                dot.parentElement.removeChild(dot);
-            }
+        for (const featureId of Array.from(this.indicators.keys())) {
+            this.removeIndicator(featureId);
         }
-        this.indicators.clear();
+        this.pendingSelectors = [];
+        if (this._mutationObserver) {
+            this._mutationObserver.disconnect();
+            this._mutationObserver = null;
+        }
     }
 
     /**
-     * Add indicators to elements with new features
+     * Add indicators to elements with new features.
+     *
+     * `elementSelector` may be a string (single anchor) or an array (breadcrumb
+     * chain from outer UI → inner feature). Dots for selectors whose element
+     * isn't in the DOM yet (e.g. Settings modal internals) are queued and
+     * attached by a MutationObserver when they appear.
      */
     addIndicators() {
         if (!this.state.showWhatsNew) return;
 
         const newFeatures = this.getNewFeatures();
+        let placed = 0, pending = 0, noTarget = 0;
+
         for (const feature of newFeatures) {
-            if (feature.elementSelector) {
-                const element = document.querySelector(feature.elementSelector);
+            if (!feature.elementSelector) { noTarget++; continue; }
+
+            const selectors = Array.isArray(feature.elementSelector)
+                ? feature.elementSelector
+                : [feature.elementSelector];
+
+            selectors.forEach((selector, idx) => {
+                const isLast = idx === selectors.length - 1;
+                const element = document.querySelector(selector);
                 if (element) {
-                    this.addIndicator(element, feature.id, feature.text);
+                    this.addIndicator(element, feature.id, feature.text, isLast);
+                    placed++;
+                } else {
+                    this.pendingSelectors.push({ featureId: feature.id, selector, text: feature.text, isLast });
+                    pending++;
                 }
+            });
+        }
+
+        if (pending > 0) this._startPendingObserver();
+
+        console.log(`[VersionManager] Blue dots: ${placed} placed, ${pending} pending (lazy DOM), ${noTarget} features without selector`);
+
+        if (pending > 0) {
+            setTimeout(() => {
+                const stillPending = this.pendingSelectors.length;
+                if (stillPending > 0) {
+                    console.warn(`[VersionManager] ${stillPending} blue-dot selector(s) still unresolved after 10s:`,
+                        this.pendingSelectors.map(p => `${p.featureId}: ${p.selector}`));
+                }
+            }, 10000);
+        }
+    }
+
+    /**
+     * Start watching document.body for pending selectors to appear.
+     */
+    _startPendingObserver() {
+        if (this._mutationObserver) return;
+        this._mutationObserver = new MutationObserver(() => this._processPendingSelectors());
+        this._mutationObserver.observe(document.body, { childList: true, subtree: true });
+    }
+
+    _processPendingSelectors() {
+        if (this.pendingSelectors.length === 0) return;
+        const stillPending = [];
+        for (const p of this.pendingSelectors) {
+            // Skip pending selectors for features that have been marked seen
+            if (!this.isFeatureNew(p.featureId)) continue;
+            const el = document.querySelector(p.selector);
+            if (el) {
+                this.addIndicator(el, p.featureId, p.text, p.isLast);
+            } else {
+                stillPending.push(p);
             }
+        }
+        this.pendingSelectors = stillPending;
+        if (stillPending.length === 0 && this._mutationObserver) {
+            this._mutationObserver.disconnect();
+            this._mutationObserver = null;
         }
     }
 
@@ -905,27 +1097,22 @@ class VersionManager {
                 this.setShowWhatsNew(false);
             }
 
-            // Mark shown features as seen when closing
-            if (specificVersion) {
-                const entry = this.changelog.find(e => e.version === specificVersion);
-                if (entry) {
-                    for (const feature of entry.features) {
+            // Hybrid mark-seen policy on modal dismiss:
+            //   * Features WITH elementSelector (dotted) stay unseen — dots persist
+            //     as navigation aids until the user actually clicks the anchor.
+            //   * Features WITHOUT elementSelector (bugfixes, perf wins, global
+            //     shortcuts like Ctrl+K) get marked seen here, because they have
+            //     no UI anchor to click — reading the changelog IS the
+            //     acknowledgement. Otherwise they'd show as "new" forever.
+            const entries = specificVersion
+                ? this.changelog.filter(e => e.version === specificVersion)
+                : this.changelog;
+            for (const entry of entries) {
+                for (const feature of entry.features) {
+                    if (!feature.elementSelector) {
                         this.markFeatureSeen(feature.id);
                     }
                 }
-            } else {
-                // If showing all, mark all features as seen
-                for (const entry of this.changelog) {
-                    for (const feature of entry.features) {
-                        this.markFeatureSeen(feature.id);
-                    }
-                }
-            }
-
-            // Remove "has-updates" indicator from version tag
-            const tagline = document.querySelector('.brand-tagline');
-            if (tagline) {
-                tagline.classList.remove('has-updates');
             }
 
             this.modal.remove();

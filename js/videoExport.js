@@ -275,8 +275,18 @@ class VideoExport {
         // Pre-cache mini-map tiles (shared method)
         await this._preCacheMiniMapTiles(exportStart, exportEnd);
 
+        // Progress-bar split between Phase 1 (pre-render) and Phase 2 (encode).
+        // Phase 1 is dominated by per-frame seeking, compositing, plate blur,
+        // and overlay rendering, so in practice it's the slower phase for both
+        // paths. Fast Export's Phase 2 is ~10% of wall time; MediaRecorder's
+        // Phase 2 is typically ~25% because even at realtime capture, there's
+        // no heavy per-frame work being done.
+        const willUseFastExport = window.app?.settingsManager?.get('fastExportExperimental')
+            && window.VideoExportFast?.isSupported();
+        const phase1PctMax = willUseFastExport ? 90 : 75;
+
         // Phase 1: Render all frames to ImageData buffer
-        console.log('Phase 1: Rendering frames to buffer...');
+        console.log(`Phase 1: Rendering frames to buffer... (progress ends at ${phase1PctMax}%)`);
         const frameBuffer = [];
         const renderCanvas = document.createElement('canvas');
         renderCanvas.width = canvasWidth;
@@ -403,9 +413,9 @@ class VideoExport {
                 const bitmap = await createImageBitmap(renderCanvas);
                 frameBuffer.push(bitmap);
 
-                // Report render progress (0-50%)
+                // Report render progress (0% to phase1PctMax)
                 if (this.onProgress) {
-                    const progressPercent = ((frameNum + 1) / totalFrames) * 50;
+                    const progressPercent = ((frameNum + 1) / totalFrames) * phase1PctMax;
                     this.onProgress(progressPercent, absoluteTime - exportStart, exportDuration);
                 }
 
@@ -419,6 +429,59 @@ class VideoExport {
 
             // Phase 2: Play back frames at correct timing and record
             console.log('Phase 2: Recording from buffer...');
+
+            // ----- Fast Export (Experimental) branch -----
+            // If the user has opted in AND WebCodecs is available, bypass MediaRecorder
+            // entirely and encode the already-rendered frame buffer directly via
+            // VideoEncoder + mp4-muxer. On any failure we fall through to the
+            // MediaRecorder path below, so this is always a strict upgrade.
+            const fastEnabled = window.app?.settingsManager?.get('fastExportExperimental');
+            if (fastEnabled && window.VideoExportFast?.isSupported()) {
+                try {
+                    console.log('[FastExport] Attempting WebCodecs-based encode...');
+                    const wallStart = performance.now();
+                    const fast = new window.VideoExportFast();
+                    const blob = await fast.encodeFrames({
+                        frameBuffer,
+                        fps,
+                        width: canvasWidth,
+                        height: canvasHeight,
+                        onProgress: (done, total) => {
+                            if (this.onProgress) {
+                                const pct = phase1PctMax + (done / total) * (100 - phase1PctMax);
+                                this.onProgress(pct, done / fps, exportDuration);
+                            }
+                        },
+                        onSpeed: (multiplier) => {
+                            console.log(`[FastExport] Encoding at ${multiplier.toFixed(2)}× realtime`);
+                        }
+                    });
+                    const wallElapsed = (performance.now() - wallStart) / 1000;
+                    console.log(`[FastExport] Encoded ${frameBuffer.length} frames in ${wallElapsed.toFixed(2)}s (${(exportDuration / wallElapsed).toFixed(2)}× realtime)`);
+
+                    // Download
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    const labelMap = { front: 'front', back: 'rear', left_repeater: 'left', right_repeater: 'right', left_pillar: 'left-pillar', right_pillar: 'right-pillar' };
+                    const camLabel = singleCamera ? `_${labelMap[singleCamera] || singleCamera}` : '';
+                    a.download = `TeslaCam_Export${camLabel}_${new Date().toISOString().slice(0, 19).replace(/[:-]/g, '')}_fast.mp4`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+
+                    for (const bitmap of frameBuffer) {
+                        if (bitmap && typeof bitmap.close === 'function') bitmap.close();
+                    }
+                    console.log('[FastExport] Export complete');
+                    return;
+                } catch (err) {
+                    console.warn('[FastExport] Failed, falling back to MediaRecorder:', err);
+                    // Fall through to standard path below
+                }
+            }
+            // ----- End Fast Export branch -----
 
             const playbackCanvas = document.createElement('canvas');
             playbackCanvas.width = canvasWidth;
@@ -466,9 +529,9 @@ class VideoExport {
                     // Draw frame
                     playbackCtx.drawImage(frameBuffer[frameIndex], 0, 0);
 
-                    // Report playback progress (50-100%)
+                    // Report playback progress (phase1PctMax to 100%)
                     if (this.onProgress) {
-                        const progressPercent = 50 + ((frameIndex + 1) / frameBuffer.length) * 50;
+                        const progressPercent = phase1PctMax + ((frameIndex + 1) / frameBuffer.length) * (100 - phase1PctMax);
                         const elapsedSec = (frameIndex / fps);
                         this.onProgress(progressPercent, elapsedSec, exportDuration);
                     }
@@ -1864,31 +1927,72 @@ class VideoExport {
     async _preCacheMiniMapTiles(exportStart, exportEnd) {
         const settings = window.app?.settingsManager;
         const miniMapInExport = !settings || settings.get('miniMapInExport') !== false;
-        if (!window.app?.miniMapOverlay || !miniMapInExport || !window.app.telemetryOverlay?.hasTelemetryData()) {
+        if (!window.app?.miniMapOverlay || !miniMapInExport) return;
+
+        // The user must have the mini-map visible on screen (Show Mini-Map)
+        // for it to appear in the export. Otherwise we'd include an overlay
+        // they explicitly didn't opt into.
+        if (!window.app.miniMapOverlay.isVisible) {
+            console.log('[Export] Mini-map not visible on screen — skipping export overlay');
             return;
         }
+
+        const hasTelemetry = window.app.telemetryOverlay?.hasTelemetryData();
+        const eventGps = this._getEventFallbackGps();
+        if (!hasTelemetry && !eventGps) return;
 
         console.log('[Export] Pre-caching mini-map tiles...');
         window.app.miniMapOverlay.clearTrail();
         try {
             const positions = [];
-            for (let t = exportStart; t <= exportEnd; t += 1) {
-                await this.videoPlayer.seekToEventTime(t);
-                const clipIndex = this.videoPlayer.currentClipIndex || 0;
-                const timeInClip = this.videoPlayer.getCurrentTime() || 0;
-                const videoDuration = this.videoPlayer.getCurrentDuration() || 60;
-                window.app.telemetryOverlay.updateTelemetry(clipIndex, timeInClip, videoDuration);
-                const data = window.app.telemetryOverlay.currentData;
-                if (data?.latitude_deg && data?.longitude_deg) {
-                    positions.push({ lat: data.latitude_deg, lng: data.longitude_deg });
+            if (hasTelemetry) {
+                for (let t = exportStart; t <= exportEnd; t += 1) {
+                    await this.videoPlayer.seekToEventTime(t);
+                    const clipIndex = this.videoPlayer.currentClipIndex || 0;
+                    const timeInClip = this.videoPlayer.getCurrentTime() || 0;
+                    const videoDuration = this.videoPlayer.getCurrentDuration() || 60;
+                    window.app.telemetryOverlay.updateTelemetry(clipIndex, timeInClip, videoDuration);
+                    const data = window.app.telemetryOverlay.currentData;
+                    if (data?.latitude_deg && data?.longitude_deg) {
+                        positions.push({ lat: data.latitude_deg, lng: data.longitude_deg });
+                    }
                 }
+                await this.videoPlayer.seekToEventTime(exportStart);
+            }
+            // Always include the event.json fallback GPS if available. The render
+            // path falls back to it whenever a given frame lacks telemetry GPS, so
+            // the tile cache must cover that location too. Without this, events
+            // with partial SEI (some frames have GPS, some don't) or events whose
+            // telemetry GPS is all zeros/missing render the mini-map as black at
+            // draw time even though we "pre-cached" something.
+            if (eventGps) {
+                positions.push({ lat: eventGps.lat, lng: eventGps.lng });
+            }
+            if (positions.length === 0) {
+                console.warn('[Export] No GPS positions found — mini-map tile cache will be empty');
             }
             await window.app.miniMapOverlay.preCacheTilesForExport(positions);
-            await this.videoPlayer.seekToEventTime(exportStart);
-            console.log(`[Export] Pre-cached tiles for ${positions.length} positions`);
+            console.log(`[Export] Pre-cached tiles for ${positions.length} position(s)`);
         } catch (e) {
             console.warn('[Export] Unable to pre-cache mini-map tiles:', e);
         }
+    }
+
+    /**
+     * Pull the single fallback GPS point from the current event's event.json.
+     * Used for Sentry events that have est_lat/est_lon but no SEI trajectory —
+     * so the exported mini-map still shows the event location even without
+     * moment-to-moment telemetry.
+     * @returns {{lat:number, lng:number}|null}
+     */
+    _getEventFallbackGps() {
+        const meta = window.app?.currentEvent?.metadata;
+        if (!meta?.est_lat || !meta?.est_lon) return null;
+        const lat = parseFloat(meta.est_lat);
+        const lng = parseFloat(meta.est_lon);
+        if (!isFinite(lat) || !isFinite(lng)) return null;
+        if (Math.abs(lat) < 0.001 || Math.abs(lng) < 0.001) return null;
+        return { lat, lng };
     }
 
     /**
@@ -1903,37 +2007,53 @@ class VideoExport {
      */
     _renderTelemetryAndMap(ctx, canvasWidth, canvasHeight, absoluteTime, options = {}) {
         const { privacyMode = false } = options;
+        if (privacyMode) return;
+
         const settings = window.app?.settingsManager;
         const telemetryEnabled = !settings || settings.get('telemetryOverlayInExport') !== false;
-
-        if (privacyMode || !window.app?.telemetryOverlay || !telemetryEnabled || !window.app.telemetryOverlay.hasTelemetryData()) {
-            return;
-        }
-
-        const clipIndex = this.videoPlayer.currentClipIndex || 0;
-        const timeInClip = this.videoPlayer.getCurrentTime() || 0;
-        const videoDuration = this.videoPlayer.getCurrentDuration() || 60;
-        window.app.telemetryOverlay.updateTelemetry(clipIndex, timeInClip, videoDuration);
-
-        const telemetryData = window.app.telemetryOverlay.getCurrentTelemetry();
-        if (!telemetryData) return;
-
-        const blinkState = Math.floor(absoluteTime * 2) % 2 === 0;
-        const hudScale = canvasWidth / 1000;
-        window.app.telemetryOverlay.renderToCanvas(ctx, canvasWidth, canvasHeight, telemetryData, {
-            blinkState,
-            scale: hudScale
-        });
-
         const miniMapInExport = !settings || settings.get('miniMapInExport') !== false;
-        if (window.app?.miniMapOverlay && miniMapInExport && telemetryData.latitude_deg && telemetryData.longitude_deg) {
-            window.app.miniMapOverlay.updatePositionForExport(
-                telemetryData.latitude_deg,
-                telemetryData.longitude_deg,
-                telemetryData.heading_deg || 0
-            );
-            window.app.miniMapOverlay.drawToCanvas(ctx, canvasWidth, canvasHeight);
+        const hasTelemetry = window.app?.telemetryOverlay?.hasTelemetryData();
+
+        let telemetryData = null;
+        if (window.app?.telemetryOverlay && telemetryEnabled && hasTelemetry) {
+            const clipIndex = this.videoPlayer.currentClipIndex || 0;
+            const timeInClip = this.videoPlayer.getCurrentTime() || 0;
+            const videoDuration = this.videoPlayer.getCurrentDuration() || 60;
+            window.app.telemetryOverlay.updateTelemetry(clipIndex, timeInClip, videoDuration);
+            telemetryData = window.app.telemetryOverlay.getCurrentTelemetry();
         }
+
+        // HUD (speed/gear/etc.) requires SEI telemetry — no useful fallback.
+        if (telemetryData && telemetryEnabled) {
+            const blinkState = Math.floor(absoluteTime * 2) % 2 === 0;
+            const hudScale = canvasWidth / 1000;
+            window.app.telemetryOverlay.renderToCanvas(ctx, canvasWidth, canvasHeight, telemetryData, {
+                blinkState,
+                scale: hudScale
+            });
+        }
+
+        // Mini-map renders whenever we have *any* GPS source: live telemetry
+        // preferred, otherwise fall back to event.json est_lat/est_lon so
+        // Sentry events without telemetry still get a map in the export.
+        // Also requires the overlay to be visible on screen — user's choice.
+        if (!window.app?.miniMapOverlay || !miniMapInExport) return;
+        if (!window.app.miniMapOverlay.isVisible) return;
+
+        let lat, lng, heading;
+        if (telemetryData?.latitude_deg && telemetryData?.longitude_deg) {
+            lat = telemetryData.latitude_deg;
+            lng = telemetryData.longitude_deg;
+            heading = telemetryData.heading_deg || 0;
+        } else {
+            const gps = this._getEventFallbackGps();
+            if (!gps) return;
+            lat = gps.lat;
+            lng = gps.lng;
+            heading = 0;
+        }
+        window.app.miniMapOverlay.updatePositionForExport(lat, lng, heading);
+        window.app.miniMapOverlay.drawToCanvas(ctx, canvasWidth, canvasHeight);
     }
 
     /**

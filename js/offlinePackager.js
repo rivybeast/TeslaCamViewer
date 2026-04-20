@@ -39,6 +39,9 @@ class OfflinePackager {
 
             // Telemetry & Data
             'seiExtractor.js',
+            'seiDiagnostics.js',
+            'diagnosticsLogger.js',
+            'backgroundScheduler.js',
             'telemetryOverlay.js',
             'telemetryGraphs.js',
 
@@ -65,7 +68,11 @@ class OfflinePackager {
             // Export & Capture
             'screenshotCapture.js',
             'videoExport.js',
+            'videoExportFast.js',
             'videoEnhancer.js',
+            'thumbnailCache.js',
+            'commandPalette.js',
+            'fileSystemObserver.js',
             'insuranceReport.js',
             'collisionReconstruction.js',
 
@@ -340,6 +347,22 @@ class OfflinePackager {
             zip.file('vendor/gif.worker.js', gifWorker);
         } catch (e) {
             console.warn('gif.js not found, skipping');
+        }
+
+        // 3d2. Bundle mp4-muxer for Fast Export (Experimental)
+        try {
+            const mp4muxer = await this.fetchLocal('vendor/mp4-muxer.min.mjs');
+            zip.file('vendor/mp4-muxer.min.mjs', mp4muxer);
+        } catch (e) {
+            console.warn('mp4-muxer.min.mjs not found, skipping');
+        }
+
+        // 3e. Bundle tweetnacl for Ed25519 signature verification
+        try {
+            const naclJs = await this.fetchLocal('vendor/nacl-fast.min.js');
+            zip.file('vendor/nacl-fast.min.js', naclJs);
+        } catch (e) {
+            console.warn('nacl-fast.min.js not found, skipping');
         }
 
         // 4. Download external libraries

@@ -60,6 +60,10 @@ class SettingsManager {
             // Export
             exportFormat: 'webm',  // 'webm' or 'mp4'
 
+            // Fast Export (Experimental) — WebCodecs + mp4-muxer, 5-10x faster than realtime.
+            // Falls back to MediaRecorder on any failure. MP4 output only.
+            fastExportExperimental: false,
+
             // Privacy Mode Export - strips identifying metadata from exports
             privacyModeExport: false,  // When enabled, removes timestamp, GPS, location, and mini-map from exports
 
@@ -228,6 +232,14 @@ class SettingsManager {
                                 <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
                             </svg>
                             <span>${this.t('settings.tabs.advanced')}</span>
+                        </button>
+                        <button class="settings-nav-item ${this._activeTab === 'diagnostics' ? 'active' : ''}" data-tab="diagnostics">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="12" cy="12" r="10"/>
+                                <line x1="12" y1="8" x2="12" y2="12"/>
+                                <line x1="12" y1="16" x2="12.01" y2="16"/>
+                            </svg>
+                            <span>Diagnostics</span>
                         </button>
                     </nav>
                     <div class="settings-sidebar-footer">
@@ -452,6 +464,11 @@ class SettingsManager {
                             <input type="checkbox" id="setting-showBrandingInExport" class="setting-checkbox" checked>
                             <span class="setting-hint">${this.t('settings.export.brandingHint')}</span>
                         </div>
+                        <div class="setting-row">
+                            <label for="setting-fastExportExperimental">Fast Export (Experimental)</label>
+                            <input type="checkbox" id="setting-fastExportExperimental" class="setting-checkbox">
+                            <span class="setting-hint">Uses WebCodecs + mp4-muxer for 5–10× faster-than-realtime MP4 export. Falls back to MediaRecorder on failure.</span>
+                        </div>
                     </div>
                 </div>
 
@@ -530,6 +547,11 @@ class SettingsManager {
                         </p>
                     </div>
                 </div>
+
+                <!-- Diagnostics Tab: SEI Unknown-Field Scanner -->
+                <div class="settings-tab-content ${this._activeTab === 'diagnostics' ? 'active' : ''}" data-tab-content="diagnostics">
+                    ${window.seiDiagnostics ? window.seiDiagnostics.renderDiagnosticsTab() : '<div class="settings-section">Diagnostics module not loaded.</div>'}
+                </div>
                     </div>
                 </div>
             </div>
@@ -538,6 +560,12 @@ class SettingsManager {
         // Re-bind events after rendering
         this.bindPanelEvents();
         this.bindNavEvents();
+
+        // Wire up SEI Diagnostics tab events if the module is loaded.
+        if (window.seiDiagnostics && typeof window.seiDiagnostics.bindDiagnosticsTabEvents === 'function') {
+            const diagPane = this.modal.querySelector('[data-tab-content="diagnostics"]');
+            if (diagPane) window.seiDiagnostics.bindDiagnosticsTabEvents(diagPane);
+        }
     }
 
     /**
@@ -568,7 +596,9 @@ class SettingsManager {
         // Update section title
         const sectionTitle = this.modal.querySelector('#settingsSectionTitle');
         if (sectionTitle) {
-            sectionTitle.textContent = this.t(`settings.tabs.${tabName}`);
+            const translated = this.t(`settings.tabs.${tabName}`);
+            const fallback = tabName === 'diagnostics' ? 'Diagnostics' : translated;
+            sectionTitle.textContent = translated && translated !== `settings.tabs.${tabName}` ? translated : fallback;
         }
 
         // Update tab content
