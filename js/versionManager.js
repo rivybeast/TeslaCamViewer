@@ -19,12 +19,24 @@ class VersionManager {
 
         // Current version - UPDATE THIS when releasing new features
         // Format: Year.Week.DayOfWeek.Release
-        this.currentVersion = '2026.17.1.1';
+        this.currentVersion = '2026.17.4.1';
 
         // Changelog with feature identifiers for "what's new" dots
         // Each entry has: version, date, title, and features array
         // Features have: id (for tracking seen state), text, elementSelector (optional)
         this.changelog = [
+            {
+                version: '2026.17.4.1',
+                date: '2026-04-23',
+                title: 'License Activation Fix',
+                features: [
+                    {
+                        id: 'license-activation-double-click-fix',
+                        text: 'Fixed license activation: a single click on the Activate button was firing two handlers at once, which caused a spurious "deactivate" confirm dialog and, in some cases, kicked fresh users back to Free Tier right after seeing "License Activated!". New users can now activate in one click.',
+                        elementSelector: null
+                    }
+                ]
+            },
             {
                 version: '2026.17.1.1',
                 date: '2026-04-20',
