@@ -38,7 +38,7 @@ class FilterPanel {
                         <span>${t('filter.filters')}</span>
                         ${filterCount > 0 ? `<span class="filter-badge" id="filterBadge">${filterCount}</span>` : ''}
                     </div>
-                    <span class="collapse-icon">${this.isExpanded ? 'v' : '>'}</span>
+                    <svg class="collapse-icon-svg ${this.isExpanded ? '' : 'collapsed'}" width="10" height="10" viewBox="0 0 10 10" fill="currentColor" style="transition:transform 0.22s ease; flex-shrink:0;"><path d="M2 3.5 L5 6.5 L8 3.5 Z"/></svg>
                 </div>
 
                 <div class="filter-content ${this.isExpanded ? 'expanded' : ''}">
@@ -255,7 +255,7 @@ class FilterPanel {
     togglePanel() {
         this.isExpanded = !this.isExpanded;
         const content = this.container.querySelector('.filter-content');
-        const icon = this.container.querySelector('.collapse-icon');
+        const icon = this.container.querySelector('.collapse-icon-svg') || this.container.querySelector('.collapse-icon');
 
         if (content) {
             if (this.isExpanded) {
@@ -266,7 +266,12 @@ class FilterPanel {
         }
 
         if (icon) {
-            icon.textContent = this.isExpanded ? 'v' : '>';
+            // SVG version uses CSS class to rotate; legacy text version swaps character
+            if (icon.tagName && icon.tagName.toLowerCase() === 'svg') {
+                icon.classList.toggle('collapsed', !this.isExpanded);
+            } else {
+                icon.textContent = this.isExpanded ? 'v' : '>';
+            }
         }
     }
 

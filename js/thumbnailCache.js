@@ -75,15 +75,14 @@ class ThumbnailCache {
     }
 
     /**
-     * Return the thumbnail closest to the requested event-time.
-     * Returns null while generation is still in progress — showing
-     * partially-generated previews at wrong positions confuses users
-     * more than showing nothing until the full set is ready.
-     * @returns {Object|null} { time, url } or null
+     * Return the thumbnail closest to the requested event-time. Exposes
+     * partial-generation state via `partial: true` so callers can show a
+     * progress hint — positions are always correct, just sparser while
+     * generation is still in progress.
      */
     getThumbnailAtTime(event, time) {
         const entry = this.cache.get(this._getEventKey(event));
-        if (!entry || !entry.fullyLoaded || entry.thumbnails.length === 0) return null;
+        if (!entry || entry.thumbnails.length === 0) return null;
 
         const thumbs = entry.thumbnails;
         let lo = 0, hi = thumbs.length - 1;
@@ -94,7 +93,8 @@ class ThumbnailCache {
         }
         const candidate = thumbs[lo];
         const prev = thumbs[Math.max(0, lo - 1)];
-        return (Math.abs(prev.time - time) < Math.abs(candidate.time - time)) ? prev : candidate;
+        const best = (Math.abs(prev.time - time) < Math.abs(candidate.time - time)) ? prev : candidate;
+        return { time: best.time, url: best.url, partial: !entry.fullyLoaded };
     }
 
     /**

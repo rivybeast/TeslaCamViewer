@@ -490,6 +490,16 @@ class TelemetryOverlay {
         this._updateScale();
         this._startUpdateLoop();
 
+        // ResizeObserver on parent (.video-grid) — see miniMapOverlay for
+        // the full reasoning. window.resize alone missed the maximize
+        // transition because the parent's reflow lagged the resize event.
+        if (typeof ResizeObserver !== 'undefined' && this.container.parentElement && !this._resizeObserver) {
+            this._resizeObserver = new ResizeObserver(() => {
+                if (this.isVisible) this._updateScale();
+            });
+            this._resizeObserver.observe(this.container.parentElement);
+        }
+
         // Notify visibility change
         if (this.onVisibilityChange) {
             this.onVisibilityChange(true);
@@ -503,6 +513,11 @@ class TelemetryOverlay {
         this.container.style.display = 'none';
         this.isVisible = false;
         this._stopUpdateLoop();
+
+        if (this._resizeObserver) {
+            try { this._resizeObserver.disconnect(); } catch {}
+            this._resizeObserver = null;
+        }
 
         // Notify visibility change
         if (this.onVisibilityChange) {
@@ -1054,31 +1069,22 @@ class TelemetryOverlay {
     }
 
     /**
-     * Recording Health — detect suspiciously short clips or frame_seq_no gaps.
-     * Tesla clips are normally ~60s × ~30fps ≈ 1800 frames. Short clips indicate
-     * recording was interrupted or restarted mid-event.
+     * Recording Health — detect suspiciously short clips by SEI frame count.
+     * Delegates to seiInsights so the live player, the background scanner,
+     * and the sidebar all see the same numbers from the same algorithm.
      * @returns {Object} { isHealthy, shortClipCount, expectedFramesPerClip, details }
      */
     getRecordingHealth() {
-        const details = [];
-        let shortClipCount = 0;
-        const EXPECTED_FRAMES = 1800; // 60s × 30fps baseline
-        const SHORT_THRESHOLD = 900;   // Under 30s worth of frames = suspicious
-
-        for (const [key, data] of this.clipSeiData.entries()) {
-            if (!data || !Array.isArray(data.frames)) continue;
-            const fc = data.frames.length;
-            if (fc > 0 && fc < SHORT_THRESHOLD) {
-                shortClipCount++;
-                details.push({ clip: key, frameCount: fc });
-            }
-        }
-
+        const EXPECTED_FRAMES = 1800; // 60s × 30fps baseline (for callers that display the expected)
+        const r = window.seiInsights
+            ? window.seiInsights.computeRecordingHealthFromSei(this.clipSeiData)
+            : { shortClipCount: 0, details: [] };
         return {
-            isHealthy: shortClipCount === 0,
-            shortClipCount,
+            isHealthy: r.shortClipCount === 0,
+            shortClipCount: r.shortClipCount,
             expectedFramesPerClip: EXPECTED_FRAMES,
-            details
+            // Preserve legacy shape — old call sites read `clip`, scanner reads `clipKey`.
+            details: (r.details || []).map(d => ({ clip: d.clipKey, frameCount: d.frameCount }))
         };
     }
 
@@ -1742,18 +1748,39 @@ class TelemetryOverlay {
         const units = options.units || this.units;
         const position = options.position || this.position;
 
-        // Calculate scale based on canvas size vs reference (1200px width as base)
-        // This makes the overlay scale proportionally with export resolution
+        // Calculate scale based on canvas size vs reference (1200px width as base).
+        // Three inputs to scale/position, in priority order:
+        //   1. options.pixelRect  — exact pixel box on the canvas (from live
+        //                            DOM mirror). Used by export for 1:1 parity.
+        //   2. options.scale      — caller-supplied scale multiplier.
+        //   3. Natural formula    — canvas-width relative to 1200px base.
         const baseWidth = 1200;
-        const scale = options.scale !== undefined ? options.scale : Math.max(0.8, Math.min(2.0, canvasWidth / baseWidth));
+        const overlayWidthBase = style === 'cockpit' ? 280 : (style === 'tesla' ? 230 : 150);
+        let scale;
+        if (options.pixelRect) {
+            scale = options.pixelRect.w / overlayWidthBase;
+        } else if (options.scale !== undefined) {
+            scale = options.scale;
+        } else {
+            scale = Math.max(0.8, canvasWidth / baseWidth);
+        }
 
-        // Calculate pixel position from percentage (adjusted for overlay centering)
-        // Position is center point, so we need to offset by half the scaled overlay size
-        const overlayWidth = style === 'cockpit' ? 280 : (style === 'tesla' ? 230 : 150);
+        // Overlay base dimensions (used by internal rendering code below to
+        // lay out sub-elements). The rendered result is scaled up to
+        // `overlayWidth * scale` × `overlayHeight * scale`.
+        const overlayWidth = overlayWidthBase;
         const overlayHeight = style === 'cockpit' ? 60 : (style === 'tesla' ? 44 : 30);
 
-        const x = (position.x / 100) * canvasWidth - (overlayWidth * scale / 2);
-        const y = (position.y / 100) * canvasHeight - (overlayHeight * scale / 2);
+        // Position — pixelRect takes priority (live DOM mirror), else saved
+        // percent position converted to canvas pixels.
+        let x, y;
+        if (options.pixelRect) {
+            x = options.pixelRect.x;
+            y = options.pixelRect.y;
+        } else {
+            x = (position.x / 100) * canvasWidth - (overlayWidth * scale / 2);
+            y = (position.y / 100) * canvasHeight - (overlayHeight * scale / 2);
+        }
 
         // Use animation state for blink (30fps assumed for export)
         const blinkState = options.blinkState !== undefined ? options.blinkState : this.blinkState;

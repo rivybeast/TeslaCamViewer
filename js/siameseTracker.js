@@ -70,7 +70,7 @@ class SiameseTracker {
 
             this.backboneSession = await ort.InferenceSession.create(
                 this.modelPaths.backbone,
-                { executionProviders: ['wasm'] }
+                { executionProviders: ['webgpu', 'wasm'] }
             );
 
             // Load head (cross-correlation + regression)
@@ -79,7 +79,7 @@ class SiameseTracker {
 
             this.headSession = await ort.InferenceSession.create(
                 this.modelPaths.head,
-                { executionProviders: ['wasm'] }
+                { executionProviders: ['webgpu', 'wasm'] }
             );
 
             if (onProgress) onProgress('Models loaded!', 1.0);

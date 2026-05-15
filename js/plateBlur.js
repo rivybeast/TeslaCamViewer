@@ -16,9 +16,40 @@ class PlateBlur {
         this.blurRadius = 30; // Strong blur for plates
         this.blurPadding = 18; // Extra padding for movement
 
-        // Simple history-based tracking - keep all recent detections
-        this.detectionHistory = []; // Array of {plates, timestamp}
-        this.historyDuration = 1500; // Keep 1.5 seconds of detection history
+        // ===== Tracker tunables =====
+        // Frames a track survives without a fresh detection match before it
+        // retires. With detection running every 3rd frame at 30fps that's
+        // half a second of survival — bridges gaps where detection drops
+        // confidence on one or two frames without the blur flickering off.
+        this.trackPersistenceFrames = 15;
+        // IoU threshold for matching a new detection to an existing track.
+        // Lower = stickier (matches even when boxes drift); higher = more
+        // strict (avoids merging two adjacent plates).
+        this.trackIoUThreshold = 0.25;
+        // EMA smoothing factor for position updates. 0.6 = 60% new + 40%
+        // smoothed; resists single-frame jitter without lagging too much.
+        this.trackPositionEma = 0.6;
+        // Frames before we trust velocity enough to predict missed frames.
+        this.trackVelocityWarmup = 3;
+        // Blur edge softness — fraction of box size used for the feathered
+        // alpha gradient. 0.18 ≈ 18% of width/height fades into surroundings.
+        this.blurEdgeFeather = 0.18;
+        // Frames over which a new track fades in / retiring track fades out
+        // (to avoid hard pops on appear/disappear).
+        this.trackFadeFrames = 4;
+
+        // Active tracks. Each: {
+        //   id, x, y, width, height, vx, vy, confidence,
+        //   framesSinceSeen, framesTracked
+        // }
+        this._tracks = [];
+        this._nextTrackId = 1;
+
+        // Legacy time-window history kept for the older _smoothDetections
+        // path until we fully replace it. New tracker is used by
+        // processMultiCamera (the export path).
+        this.detectionHistory = [];
+        this.historyDuration = 1500;
 
         // Progress callback
         this.onProgress = null;
@@ -28,6 +59,131 @@ class PlateBlur {
         this.debugCtx = null;
         this.debugActive = false;
         this.debugAnimationId = null;
+    }
+
+    /**
+     * Reset tracker state. Call when starting a new export so leftover
+     * tracks from a previous run don't persist as ghost blurs.
+     */
+    resetTracker() {
+        this._tracks = [];
+        this._nextTrackId = 1;
+    }
+
+    /** Compute IoU (intersection-over-union) of two AABBs. */
+    _iou(a, b) {
+        const ax2 = a.x + a.width, ay2 = a.y + a.height;
+        const bx2 = b.x + b.width, by2 = b.y + b.height;
+        const ix = Math.max(0, Math.min(ax2, bx2) - Math.max(a.x, b.x));
+        const iy = Math.max(0, Math.min(ay2, by2) - Math.max(a.y, b.y));
+        const inter = ix * iy;
+        if (inter <= 0) return 0;
+        const union = a.width * a.height + b.width * b.height - inter;
+        return inter / union;
+    }
+
+    /**
+     * Update tracks with a fresh batch of detections (or none — pass [] to
+     * just age existing tracks). Returns the list of currently-active
+     * tracks to render.
+     *
+     * Behavior per detection:
+     *   - Match to best existing track by IoU >= threshold
+     *   - If matched: smooth position via EMA, update velocity, reset
+     *     framesSinceSeen, increment framesTracked
+     *   - If unmatched: create new track
+     *
+     * Behavior per existing track without a match this update:
+     *   - framesSinceSeen += 1
+     *   - If we've tracked it long enough to trust velocity, advance
+     *     position by (vx, vy) so it follows a moving car
+     *   - Retire when framesSinceSeen > trackPersistenceFrames
+     *
+     * @param {Array} detections — [{x,y,width,height,confidence}]
+     * @param {boolean} hadFreshDetection — false if we used cache this frame
+     *   (so we don't bump framesSinceSeen on cache-only frames; cache means
+     *   "no new info" not "didn't see plate")
+     */
+    _updateTracks(detections, hadFreshDetection) {
+        // 1. Match detections to existing tracks
+        const detUsed = new Set();
+        const trackUpdated = new Set();
+
+        for (let ti = 0; ti < this._tracks.length; ti++) {
+            const track = this._tracks[ti];
+            let bestIdx = -1;
+            let bestIou = this.trackIoUThreshold;
+            for (let di = 0; di < detections.length; di++) {
+                if (detUsed.has(di)) continue;
+                const iou = this._iou(track, detections[di]);
+                if (iou > bestIou) { bestIou = iou; bestIdx = di; }
+            }
+            if (bestIdx >= 0) {
+                const det = detections[bestIdx];
+                detUsed.add(bestIdx);
+                trackUpdated.add(ti);
+                const a = this.trackPositionEma;
+                // Velocity = current top-left motion (per-update, not per-frame).
+                track.vx = (det.x - track.x);
+                track.vy = (det.y - track.y);
+                // Smooth position
+                track.x = track.x * (1 - a) + det.x * a;
+                track.y = track.y * (1 - a) + det.y * a;
+                track.width = track.width * (1 - a) + det.width * a;
+                track.height = track.height * (1 - a) + det.height * a;
+                track.confidence = det.confidence ?? track.confidence;
+                track.framesSinceSeen = 0;
+                track.framesTracked++;
+            }
+        }
+
+        // 2. Spawn new tracks for unmatched detections
+        for (let di = 0; di < detections.length; di++) {
+            if (detUsed.has(di)) continue;
+            const d = detections[di];
+            this._tracks.push({
+                id: this._nextTrackId++,
+                x: d.x, y: d.y, width: d.width, height: d.height,
+                vx: 0, vy: 0,
+                confidence: d.confidence || 0.5,
+                framesSinceSeen: 0,
+                framesTracked: 1
+            });
+        }
+
+        // 3. Age existing un-matched tracks. Only count this as a "missed
+        //    frame" when the caller actually ran fresh detection — if we
+        //    were on a cache-only frame, we have no new info either way.
+        if (hadFreshDetection) {
+            for (let ti = 0; ti < this._tracks.length; ti++) {
+                if (trackUpdated.has(ti)) continue;
+                const track = this._tracks[ti];
+                track.framesSinceSeen++;
+                // Predict forward via velocity once we trust it
+                if (track.framesTracked >= this.trackVelocityWarmup) {
+                    track.x += track.vx;
+                    track.y += track.vy;
+                }
+            }
+        }
+
+        // 4. Retire tracks past the persistence horizon
+        this._tracks = this._tracks.filter(t => t.framesSinceSeen <= this.trackPersistenceFrames);
+
+        return this._tracks;
+    }
+
+    /**
+     * Compute the alpha multiplier for a track based on its lifecycle:
+     * fade in over trackFadeFrames at birth, full alpha while healthy,
+     * fade out as framesSinceSeen approaches trackPersistenceFrames.
+     */
+    _trackAlpha(track) {
+        const fade = this.trackFadeFrames;
+        const fadeIn = Math.min(1, track.framesTracked / fade);
+        const lifeLeft = this.trackPersistenceFrames - track.framesSinceSeen;
+        const fadeOut = Math.min(1, Math.max(0, lifeLeft / fade));
+        return Math.min(fadeIn, fadeOut);
     }
 
     /**
@@ -335,35 +491,60 @@ class PlateBlur {
      * @param {Object} region - Region to blur {x, y, width, height}
      * @param {number} blurRadius - Blur intensity
      */
-    blurRegion(ctx, region, blurRadius = this.blurRadius) {
+    blurRegion(ctx, region, blurRadius = this.blurRadius, alpha = 1.0) {
         const { x, y, width, height } = region;
 
         // Ensure region is valid
         if (width <= 0 || height <= 0) return;
 
-        // Save context state
-        ctx.save();
-
-        // Create clipping path for the blur region
-        ctx.beginPath();
-        ctx.rect(x, y, width, height);
-        ctx.clip();
-
-        // Apply blur filter
-        ctx.filter = `blur(${blurRadius}px)`;
-
-        // Draw the region back on itself (this applies the blur)
-        // We need to draw a larger area to account for blur edge effects
+        // Soft-edge blur: render the blurred patch through a feathered
+        // radial alpha mask so the boundary fades into the surrounding
+        // pixels instead of cutting off at a hard rectangle. Combined with
+        // optional alpha for track fade-in / fade-out.
+        //
+        // Pipeline:
+        //   1. Copy source patch onto an offscreen canvas with blur filter
+        //   2. Composite a radial gradient via destination-in to mask the
+        //      offscreen patch (center 100% opacity → outer ring 0%)
+        //   3. Draw the masked patch onto the main canvas at the requested
+        //      alpha (lifecycle fade)
         const padding = blurRadius * 2;
-        ctx.drawImage(
-            ctx.canvas,
-            x - padding, y - padding, width + padding * 2, height + padding * 2,
-            x - padding, y - padding, width + padding * 2, height + padding * 2
-        );
+        const patchX = Math.max(0, x - padding);
+        const patchY = Math.max(0, y - padding);
+        const patchW = Math.round(width + padding * 2);
+        const patchH = Math.round(height + padding * 2);
+        if (patchW <= 0 || patchH <= 0) return;
 
-        // Restore context state
-        ctx.restore();
-        ctx.filter = 'none';
+        const off = document.createElement('canvas');
+        off.width = patchW;
+        off.height = patchH;
+        const offCtx = off.getContext('2d');
+
+        offCtx.filter = `blur(${blurRadius}px)`;
+        offCtx.drawImage(
+            ctx.canvas,
+            patchX, patchY, patchW, patchH,
+            0, 0, patchW, patchH
+        );
+        offCtx.filter = 'none';
+
+        // Feathered alpha mask via radial gradient.
+        const cx = patchW / 2;
+        const cy = patchH / 2;
+        const innerR = Math.max(1, Math.min(width, height) / 2 * (1 - this.blurEdgeFeather));
+        const outerR = Math.max(width, height) / 2 + padding * 0.5;
+        const grad = offCtx.createRadialGradient(cx, cy, innerR, cx, cy, outerR);
+        grad.addColorStop(0, 'rgba(0,0,0,1)');
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        offCtx.globalCompositeOperation = 'destination-in';
+        offCtx.fillStyle = grad;
+        offCtx.fillRect(0, 0, patchW, patchH);
+        offCtx.globalCompositeOperation = 'source-over';
+
+        const prevAlpha = ctx.globalAlpha;
+        ctx.globalAlpha = prevAlpha * alpha;
+        ctx.drawImage(off, patchX, patchY);
+        ctx.globalAlpha = prevAlpha;
     }
 
     /**
@@ -386,18 +567,22 @@ class PlateBlur {
 
         let totalBlurred = 0;
 
-        // Only run detection periodically
+        // Cache-only frame — no fresh detection this tick. Tick the tracker
+        // forward without registering a "missed detection" (since we
+        // haven't actually checked) and render whatever's still active.
         if (!forceDetection && now - this.lastDetectionTime < this.detectionInterval) {
-            // Use cached detections - apply blurs from previous detection
-            for (const plate of this.cachedDetections) {
+            const tracks = this._updateTracks([], /* hadFreshDetection */ false);
+            for (const track of tracks) {
+                const alpha = this._trackAlpha(track);
+                if (alpha <= 0) continue;
                 const paddedRegion = {
-                    x: Math.max(0, plate.x - this.blurPadding),
-                    y: Math.max(0, plate.y - this.blurPadding),
-                    width: plate.width + this.blurPadding * 2,
-                    height: plate.height + this.blurPadding * 2
+                    x: Math.max(0, track.x - this.blurPadding),
+                    y: Math.max(0, track.y - this.blurPadding),
+                    width: track.width + this.blurPadding * 2,
+                    height: track.height + this.blurPadding * 2
                 };
                 if (paddedRegion.width > 5 && paddedRegion.height > 5) {
-                    this.blurRegion(ctx, paddedRegion);
+                    this.blurRegion(ctx, paddedRegion, this.blurRadius, alpha);
                     totalBlurred++;
                 }
             }
@@ -410,7 +595,17 @@ class PlateBlur {
         for (const [camName, camInfo] of Object.entries(cameras)) {
             const { video, dx, dy, dw, dh, crop, objectFit } = camInfo;
 
-            if (!video || !video.src || video.readyState < 2) continue;
+            // Accept any of: HTMLVideoElement (must have src + readyState>=2),
+            // HTMLCanvasElement, ImageBitmap, OffscreenCanvas, VideoFrame —
+            // the YOLO detector handles all of these as CanvasImageSource.
+            // ImageBitmap is what the fast WebCodecs export path produces;
+            // without this branch, plate blur was skipped on every frame
+            // there.
+            if (!video) continue;
+            const isVideoEl = (typeof HTMLVideoElement !== 'undefined') && (video instanceof HTMLVideoElement);
+            if (isVideoEl) {
+                if (!video.src || video.readyState < 2) continue;
+            }
 
             try {
                 // Detect plates in the original video
@@ -461,27 +656,38 @@ class PlateBlur {
             }
         }
 
-        // Apply temporal smoothing
-        this.cachedDetections = this._smoothDetections(allDetections);
+        // Update tracker with fresh detections — IoU-matches new boxes to
+        // existing tracks (smoothed positions), spawns new tracks, ages
+        // unmatched ones with velocity prediction, retires anything past
+        // trackPersistenceFrames frames since last seen.
+        const tracks = this._updateTracks(allDetections, /* hadFreshDetection */ true);
         this.lastDetectionTime = now;
 
-        // Apply blur to all detected plates
-        for (const plate of this.cachedDetections) {
-            const paddedRegion = {
-                x: Math.max(0, plate.x - this.blurPadding),
-                y: Math.max(0, plate.y - this.blurPadding),
-                width: plate.width + this.blurPadding * 2,
-                height: plate.height + this.blurPadding * 2
-            };
+        // Mirror tracks to cachedDetections for legacy consumers (debug
+        // overlay, single-camera path) — same shape as before.
+        this.cachedDetections = tracks.map(t => ({
+            x: t.x, y: t.y, width: t.width, height: t.height,
+            confidence: t.confidence
+        }));
 
+        // Render each track with lifecycle-aware alpha (fade in/out).
+        for (const track of tracks) {
+            const alpha = this._trackAlpha(track);
+            if (alpha <= 0) continue;
+            const paddedRegion = {
+                x: Math.max(0, track.x - this.blurPadding),
+                y: Math.max(0, track.y - this.blurPadding),
+                width: track.width + this.blurPadding * 2,
+                height: track.height + this.blurPadding * 2
+            };
             if (paddedRegion.width > 5 && paddedRegion.height > 5) {
-                this.blurRegion(ctx, paddedRegion);
+                this.blurRegion(ctx, paddedRegion, this.blurRadius, alpha);
                 totalBlurred++;
             }
         }
 
         if (this.frameCount % 30 === 1) {
-            console.log(`[PlateBlur] MultiCamera: ${totalBlurred} plates blurred across ${Object.keys(cameras).length} cameras`);
+            console.log(`[PlateBlur] MultiCamera: ${totalBlurred} blurred / ${tracks.length} tracks across ${Object.keys(cameras).length} cameras`);
         }
 
         return totalBlurred;

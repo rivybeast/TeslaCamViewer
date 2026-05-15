@@ -210,7 +210,9 @@
       "playback": "Playback",
       "overlays": "Overlays",
       "export": "Export",
-      "advanced": "Advanced"
+      "advanced": "Advanced",
+      "ai-search": "AI Search",
+      "diagnostics": "Diagnostics"
     },
 
     "playback": {

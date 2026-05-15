@@ -56,7 +56,18 @@ class FileSystemObserverManager {
         if (this.isNativeSupported) {
             try {
                 const obs = new window.FileSystemObserver((records) => {
-                    console.log(`[FSObserver] Native callback for ${driveId} — ${records.length} record(s)`);
+                    // Filter to structural events only. `modified` records fire
+                    // on content OR metadata changes — including access-time
+                    // updates from our own library scanner opening files for
+                    // SEI extraction. Without this filter, every scan pass
+                    // would pop a "New files detected" toast.
+                    const relevant = records.filter(r =>
+                        r.type === 'appeared' ||
+                        r.type === 'disappeared' ||
+                        r.type === 'moved'
+                    );
+                    if (relevant.length === 0) return;
+                    console.log(`[FSObserver] Native callback for ${driveId} — ${relevant.length} structural record(s) of ${records.length} total`);
                     this._triggerChange(driveId);
                 });
                 try {

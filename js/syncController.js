@@ -80,6 +80,14 @@ class SyncController {
      * Check sync status and correct if needed
      */
     checkAndCorrectSync() {
+        // WebCodecs master-clock path guarantees zero drift by construction
+        // (all canvases get tick(t) from the same rAF). No need to monitor,
+        // and a stray resync-seek here would trigger decoder resets. Show
+        // as synced and exit.
+        if (window.app?.videoPlayer?._useWebCodecs) {
+            this.updateSyncStatus('synced');
+            return;
+        }
         // Get videos that are still actively playing (not ended, not paused at end)
         const activeVideos = Object.values(this.videos).filter(v =>
             !v.ended && !v.paused && v.currentTime > 0 && isFinite(v.currentTime)
@@ -177,18 +185,26 @@ class SyncController {
 
     /**
      * Update sync status indicator
-     * @param {string} status 'synced' or 'drifted'
+     * @param {string} status 'synced' | 'drifted' | 'recovering'
      */
     updateSyncStatus(status) {
         if (!this.syncStatusElement) return;
 
         const statusContainer = this.syncStatusElement.parentElement;
 
+        // Don't override an in-flight watchdog "recovering" with "synced" —
+        // the notifyWatchdogRecovery() timer is responsible for reverting
+        // that state when it expires. Anything else (drift, manual sync)
+        // still takes priority over it.
+        if (this._inRecoveryState && status === 'synced') return;
+
         this.syncStatusElement.className = 'sync-indicator';
 
         if (status === 'synced') {
             this.syncStatusElement.classList.add('synced');
-            this.syncStatusElement.title = 'Videos are synchronized';
+            this.syncStatusElement.title = this._recoveryCount > 0
+                ? `Videos synchronized · ${this._recoveryCount} hardware-overlay recoveries this session`
+                : 'Videos are synchronized';
             if (statusContainer) {
                 statusContainer.dataset.status = `Synced (all ${this.cameraCount} cameras in sync)`;
             }
@@ -198,7 +214,66 @@ class SyncController {
             if (statusContainer) {
                 statusContainer.dataset.status = 'Drifted (auto-correcting)';
             }
+        } else if (status === 'recovering') {
+            this.syncStatusElement.classList.add('recovering');
+            // Title + status detail set by notifyWatchdogRecovery
+            this.syncStatusElement.title = this._recoveryTitle || 'Recovering from hardware overlay stall';
+            if (statusContainer) {
+                statusContainer.dataset.status = this._recoveryStatus || 'Recovering';
+            }
         }
+    }
+
+    /**
+     * Called by VideoPlayer's stuck-video watchdog when it micro-seeks a
+     * camera to recover it from GPU overlay starvation. Lights the sync
+     * indicator cyan/"recovering" briefly so user + diagnostic tools can
+     * see the watchdog is actively helping. Reverts to "synced" after a
+     * short quiet period.
+     *
+     * @param {string} camera   — which camera was recovered
+     * @param {Object} opts     — { readyState, currentTime, peerMedian }
+     */
+    notifyWatchdogRecovery(camera, opts = {}) {
+        this._recoveryCount = (this._recoveryCount || 0) + 1;
+        this._recoveryHistory = this._recoveryHistory || [];
+        this._recoveryHistory.push({
+            t: performance.now(),
+            camera,
+            readyState: opts.readyState,
+            currentTime: opts.currentTime,
+            peerMedian: opts.peerMedian
+        });
+        // Keep last 20 for inspection via window.app.syncController.getRecoveryHistory()
+        if (this._recoveryHistory.length > 20) this._recoveryHistory.shift();
+
+        const shortCam = ({
+            front: 'front', back: 'back',
+            left_repeater: 'left', right_repeater: 'right',
+            left_pillar: 'L pillar', right_pillar: 'R pillar'
+        })[camera] || camera;
+        this._recoveryTitle = `Watchdog recovering ${camera} · overlay contention · ${this._recoveryCount} total`;
+        this._recoveryStatus = `Recovering ${shortCam} (#${this._recoveryCount})`;
+
+        this._inRecoveryState = true;
+        this.updateSyncStatus('recovering');
+
+        // Revert to synced after a short quiet window unless another recovery
+        // fires and resets the timer
+        if (this._recoveryRevertTimer) clearTimeout(this._recoveryRevertTimer);
+        this._recoveryRevertTimer = setTimeout(() => {
+            this._inRecoveryState = false;
+            this._recoveryRevertTimer = null;
+            this.updateSyncStatus('synced');
+        }, 1500);
+    }
+
+    /** Expose recovery data for the Diagnostics tab / devtools. */
+    getRecoveryHistory() {
+        return {
+            count: this._recoveryCount || 0,
+            history: this._recoveryHistory || []
+        };
     }
 
     /**

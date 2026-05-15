@@ -23,8 +23,11 @@ class LayoutRenderer {
      */
     static calculateDrawParams(video, camConfig) {
         const crop = camConfig.crop || { top: 0, right: 0, bottom: 0, left: 0 };
-        const vw = video.videoWidth || 1280;
-        const vh = video.videoHeight || 960;
+        // Accept both HTMLVideoElement (videoWidth/Height) and ImageBitmap
+        // (width/height) — the export pipeline passes ImageBitmaps from
+        // WebCodecs decoding and we want the same crop/fit math applied.
+        const vw = video.videoWidth || video.width || 1280;
+        const vh = video.videoHeight || video.height || 960;
 
         // Calculate source rectangle (after crop)
         let sx = vw * (crop.left / 100);
@@ -214,8 +217,12 @@ class LayoutRenderer {
 
         // Apply styles to each container based on its camera identity
         containers.forEach((container) => {
-            // Identify the camera by video element ID or data attribute
-            const video = container.querySelector('video');
+            // Identify the camera by video-or-canvas element ID or data
+            // attribute. Canvas branch covers the WebCodecs-backed player,
+            // which replaces <video> with a <canvas> of matching id/class
+            // (see VideoPlayer._resolveVideos). Without this, object-fit
+            // and other per-camera inline styles were never applied.
+            const video = container.querySelector('video, canvas.video-player');
             let cameraName = container.dataset.camera;
 
             if (!cameraName && video) {
@@ -460,7 +467,7 @@ class LayoutRenderer {
             container.style.zIndex = '';
             container.style.clipPath = '';
 
-            const video = container.querySelector('video');
+            const video = container.querySelector('video, canvas.video-player');
             if (video) {
                 video.style.objectFit = '';
             }

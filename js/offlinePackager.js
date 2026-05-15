@@ -14,6 +14,7 @@ class OfflinePackager {
             // Core
             'i18n.js',
             'app.js',
+            'cameraIds.js',
 
             // Folder & Event Management
             'folderManager.js',
@@ -25,6 +26,9 @@ class OfflinePackager {
 
             // Video Playback
             'videoPlayer.js',
+            'webCodecsVideoElement.js',
+            'fastFrameExtractor.js',
+            'videoStateRecorder.js',
             'timeline.js',
             'syncController.js',
             'clipMarking.js',
@@ -40,10 +44,21 @@ class OfflinePackager {
             // Telemetry & Data
             'seiExtractor.js',
             'seiDiagnostics.js',
+            'seiInsights.js',
             'diagnosticsLogger.js',
             'backgroundScheduler.js',
             'telemetryOverlay.js',
             'telemetryGraphs.js',
+            'autopilotTimelineLayer.js',
+            'interventionSeverity.js',
+            'eventInsightsCache.js',
+            'insightsScanner.js',
+            'insightsScannerUI.js',
+
+            // AI Search (CLIP + WebCodecs)
+            'aiSearch.js',
+            'aiSearchUI.js',
+            'aiSearchHeatmap.js',
 
             // Maps & Location
             'mapView.js',
@@ -69,6 +84,7 @@ class OfflinePackager {
             'screenshotCapture.js',
             'videoExport.js',
             'videoExportFast.js',
+            'multiCameraExportDecoder.js',
             'videoEnhancer.js',
             'thumbnailCache.js',
             'commandPalette.js',

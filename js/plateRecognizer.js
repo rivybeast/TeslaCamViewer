@@ -83,7 +83,7 @@ class PlateRecognizer {
             this._reportProgress('Creating inference session...', 90);
 
             const sessionOptions = {
-                executionProviders: ['wasm'],
+                executionProviders: ['webgpu', 'wasm'],
                 graphOptimizationLevel: 'all'
             };
 

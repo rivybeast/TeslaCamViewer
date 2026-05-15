@@ -99,7 +99,17 @@ class MiniMapOverlay {
         url = url.replace('{z}', zoom.toString());
         url = url.replace('{x}', x.toString());
         url = url.replace('{y}', y.toString());
-        url = url.replace('{r}', ''); // Retina suffix, leave empty
+        // Always request retina (512×512) tiles for export — both CartoDB
+        // and Stadia (the providers TCV ships with) support the @2x
+        // variant. The live Leaflet view substitutes @2x on hi-DPI
+        // displays which is why it looks crisp; the canvas-rendered
+        // export was getting upscaled 256×256 standard tiles, which
+        // produced the "soft / artifacted / dark" mini-map the H.264
+        // encoder then degraded further. Retina at native draw size
+        // (the typical export canvas makes the mini-map ~400px wide,
+        // so 512×512 tiles draw 1:1 with no interpolation) gives the
+        // encoder real pixel detail to preserve.
+        url = url.replace('{r}', '@2x');
 
         return url;
     }
@@ -567,6 +577,20 @@ class MiniMapOverlay {
         this._applyPosition();
         this._initMap();
 
+        // ResizeObserver on the parent (.video-grid) — fires whenever the
+        // parent's box changes for ANY reason: window resize, MAXIMIZE,
+        // sidebar toggle, layout-panel resize. The window.resize listener
+        // alone missed the maximize transition because Chrome sometimes
+        // fires the event before the parent flexbox has reflowed, leaving
+        // _updateSize reading the OLD parentWidth. ResizeObserver is
+        // guaranteed to fire after layout reflow with correct dimensions.
+        if (typeof ResizeObserver !== 'undefined' && this.container.parentElement && !this._resizeObserver) {
+            this._resizeObserver = new ResizeObserver(() => {
+                if (this.isVisible) this._updateSize();
+            });
+            this._resizeObserver.observe(this.container.parentElement);
+        }
+
         // Save enabled state
         localStorage.setItem(this.ENABLED_KEY, 'true');
 
@@ -584,6 +608,13 @@ class MiniMapOverlay {
         this.isVisible = false;
         this._destroyMap();
         this.clearTrail();
+
+        // Tear down the ResizeObserver — the overlay isn't visible so we
+        // don't need to track parent size changes.
+        if (this._resizeObserver) {
+            try { this._resizeObserver.disconnect(); } catch {}
+            this._resizeObserver = null;
+        }
 
         // Save enabled state
         localStorage.setItem(this.ENABLED_KEY, 'false');
@@ -1206,19 +1237,36 @@ class MiniMapOverlay {
      * @param {number} canvasWidth
      * @param {number} canvasHeight
      */
-    drawToCanvas(ctx, canvasWidth, canvasHeight) {
+    drawToCanvas(ctx, canvasWidth, canvasHeight, options = {}) {
         if (!this.currentLat || !this.currentLng) return;
 
-        // Scale map size proportionally with canvas size
-        // Base size is 200px on a 1920px wide canvas
-        const scale = canvasWidth / 1920;
-        const mapWidth = Math.round(200 * scale);
-        const mapHeight = Math.round(200 * scale);
+        // Three sizing inputs, priority order:
+        //   1. options.pixelRect — exact canvas pixel box (from live DOM
+        //      mirror). Used by export for 1:1 parity with live UI.
+        //   2. Natural formula — canvasWidth / 1920 against 200px base.
+        let scale;
+        if (options.pixelRect) {
+            // Mirror width is the target rendered size; mini-map base is 200px.
+            scale = options.pixelRect.w / 200;
+        } else {
+            scale = canvasWidth / 1920;
+        }
+        const mapWidth = options.pixelRect
+            ? Math.round(options.pixelRect.w)
+            : Math.round(200 * scale);
+        const mapHeight = options.pixelRect
+            ? Math.round(options.pixelRect.h)
+            : Math.round(200 * scale);
         const cornerRadius = Math.round(12 * scale);
 
-        // Calculate position on canvas
-        const x = (this.position.x / 100) * canvasWidth;
-        const y = (this.position.y / 100) * canvasHeight;
+        // Position — pixelRect (live DOM mirror) takes priority, else saved
+        // percent position converted to canvas pixels.
+        const x = options.pixelRect
+            ? options.pixelRect.x
+            : (this.position.x / 100) * canvasWidth;
+        const y = options.pixelRect
+            ? options.pixelRect.y
+            : (this.position.y / 100) * canvasHeight;
         const zoom = 16;
         const tileSize = 256;
 

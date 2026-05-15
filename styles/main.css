@@ -761,12 +761,6 @@ body.sidebar-resizing * {
     padding: 4px;
 }
 
-/* Adjust sidebar layout for flex panels */
-.sidebar {
-    display: flex;
-    flex-direction: column;
-}
-
 .sidebar .tab-content {
     flex: 1;
     overflow: hidden;
@@ -1510,6 +1504,10 @@ body.sidebar-resizing * {
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.08em;
+    /* Explicit text color — previously inherited --text-muted (#5c6370),
+     * which rendered nearly invisible against the dark gradient fills. */
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
 }
 
 .event-type.saved {
@@ -1523,7 +1521,9 @@ body.sidebar-resizing * {
 }
 
 .event-type.recent {
-    background: linear-gradient(135deg, #525866 0%, #3f4450 100%);
+    /* Slightly lighter gradient + brighter text — the original gray-on-gray
+     * combo was the worst offender for legibility. */
+    background: linear-gradient(135deg, #6b7280 0%, #4b5563 100%);
 }
 
 /* Drive badge for multi-drive support */
@@ -2419,7 +2419,7 @@ button svg *,
     background: transparent;
     border: none;
     outline: none;
-    color: var(--text, #e0e0e0);
+    color: var(--text-primary);
     font-size: 1rem;
     font-family: inherit;
 }
@@ -2448,7 +2448,7 @@ button svg *,
     padding: 8px 10px;
     border-radius: 6px;
     cursor: pointer;
-    color: var(--text, #e0e0e0);
+    color: var(--text-primary);
     transition: background 0.08s ease;
 }
 
@@ -4120,6 +4120,15 @@ select option:hover,
     animation: pulse-warning 1s ease-in-out infinite;
 }
 
+/* Watchdog recovery state — cyan/blue so it's visually distinct from the
+   amber "drifted" state. Fires briefly when a micro-seek unsticks a camera
+   from GPU overlay starvation. */
+.sync-indicator.recovering {
+    background-color: #06b6d4;
+    box-shadow: 0 0 12px rgba(6, 182, 212, 0.55);
+    animation: pulse-recovering 0.6s ease-in-out infinite;
+}
+
 @keyframes pulse-success {
     0%, 100% { box-shadow: 0 0 8px var(--success-glow); }
     50% { box-shadow: 0 0 16px var(--success); }
@@ -4128,6 +4137,11 @@ select option:hover,
 @keyframes pulse-warning {
     0%, 100% { box-shadow: 0 0 8px var(--warning-glow); }
     50% { box-shadow: 0 0 16px var(--warning); }
+}
+
+@keyframes pulse-recovering {
+    0%, 100% { box-shadow: 0 0 6px rgba(6, 182, 212, 0.4); }
+    50%      { box-shadow: 0 0 18px rgba(6, 182, 212, 0.9); }
 }
 
 .sync-status::before {
@@ -4701,16 +4715,11 @@ select option:hover,
     color: #4a9eff !important;
 }
 
-/* Legacy - Map Control Buttons structure */
-.heatmap-control,
-.struggle-zones-control,
-.incident-control,
-.dark-mode-control,
-.scan-all-control {
-    border: 1px solid var(--border, #3a3a3a) !important;
-    border-radius: 6px;
-    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
-}
+/* NOTE: removed duplicate "Legacy Map Control Buttons structure" block here.
+ * It re-specified border/box-shadow with dark-theme values that silently
+ * stomped the Light Mode Base block above, leaving light-mode controls
+ * with a dark border. The .map-dark-mode variant below handles dark mode
+ * via ancestor scope, so this legacy block was dead weight. */
 
 /* Override Leaflet default focus/active states for custom controls */
 .leaflet-bar a.heatmap-toggle-btn,
@@ -5302,7 +5311,9 @@ select option:hover,
     color: #e65100;
 }
 
-.event-type {
+/* Scoped to the incident-events list — the original unscoped .event-type
+ * rule stomped the sidebar event pills, forcing their text to #666. */
+.incident-events .event-type {
     font-size: 9px;
     font-weight: 600;
     padding: 1px 4px;
@@ -5489,10 +5500,6 @@ select option:hover,
     display: flex;
     flex-direction: column;
     box-shadow: var(--shadow-lg), 0 0 60px rgba(0, 212, 255, 0.1);
-}
-
-.help-panel {
-    max-width: 600px;
 }
 
 .help-header {
@@ -12770,3 +12777,375 @@ body.theme-light .diagnostic-modal {
 body.theme-light .diagnostic-textarea {
     background: #f5f5f5;
 }
+
+/* ==================== AI Search (sidebar) ==================== */
+/* AI Search panel theming — matches sibling .filter-panel so the sidebar
+ * reads as one continuous surface. The original stylesheet referenced
+ * --bg-panel / --bg-elev, which don't exist in the project's token set,
+ * so it fell through to its literal fallbacks (#242424 / #2f2f2f) and
+ * looked wrong against the actual theme (bg-primary is #0a0c12). */
+.ai-search-panel {
+    background: var(--bg-primary);
+    border-bottom: 1px solid var(--border);
+}
+.ai-search-header {
+    padding: 8px 12px;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    user-select: none;
+    background: var(--bg-primary);
+}
+.ai-search-header:hover { background: var(--bg-elevated); }
+.ai-search-header-content {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-primary);
+}
+.ai-search-badge {
+    background: var(--accent);
+    color: white;
+    font-size: 0.68rem;
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-weight: 500;
+}
+/* Container holds the BETA pill + collapse chevron together so they
+ * stay right-anchored regardless of label/badge width on the left. */
+.ai-search-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+/* Outlined pill — readable but quiet so it doesn't fight the rest of
+ * the sidebar. Subtle pulse to nudge attention without being loud. */
+.ai-search-beta-pill {
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 1px 6px;
+    border-radius: 8px;
+    color: var(--warning);
+    background: rgba(255, 184, 0, 0.08);
+    border: 1px solid rgba(255, 184, 0, 0.45);
+    text-transform: uppercase;
+    line-height: 1.3;
+    cursor: help;
+}
+.ai-search-collapse-icon,
+.collapse-icon-svg {
+    color: var(--text-muted, #888);
+    transition: transform 0.22s ease;
+    flex-shrink: 0;
+}
+.ai-search-collapse-icon.collapsed,
+.collapse-icon-svg.collapsed {
+    transform: rotate(-90deg);
+}
+.ai-search-content {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.22s ease;
+}
+.ai-search-content.expanded {
+    max-height: 400px;
+    padding: 8px 12px 10px;
+    border-top: 1px solid var(--border, #3a3a3a);
+}
+.ai-search-row {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.ai-search-input {
+    flex: 1;
+    background: var(--bg-tertiary, #141414);
+    color: var(--text-primary);
+    border: 1px solid var(--border, #3a3a3a);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+.ai-search-input:focus { outline: 1px solid var(--accent, #4a9eff); }
+.ai-search-clear {
+    background: transparent;
+    color: var(--text-muted, #888);
+    border: 1px solid var(--border, #3a3a3a);
+    width: 28px; height: 28px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+}
+.ai-search-clear:hover { color: var(--text-primary); border-color: var(--accent, #4a9eff); }
+.ai-search-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    margin-top: 8px;
+    max-height: 80px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+.ai-search-chips::-webkit-scrollbar { width: 6px; }
+.ai-search-chips::-webkit-scrollbar-track { background: transparent; }
+.ai-search-chips::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+    border-radius: 3px;
+}
+.ai-search-chips::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
+.ai-search-chip {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    cursor: pointer;
+    white-space: nowrap;
+}
+.ai-search-chip:hover {
+    color: var(--text-primary);
+    border-color: var(--accent);
+}
+.ai-search-chip.active {
+    background: var(--accent);
+    color: white;
+    border-color: var(--accent);
+}
+.ai-search-results-header {
+    margin-top: 8px;
+    padding: 6px 8px;
+    background: var(--bg-tertiary, #141414);
+    border-radius: 4px;
+    font-size: 0.75rem;
+    color: var(--text-muted, #888);
+    font-family: ui-monospace, monospace;
+    line-height: 1.4;
+}
+.event-item.ai-confident {
+    border-left: 3px solid #4ade80;
+}
+.event-item.ai-possible {
+    border-left: 3px solid #ffb800;
+    opacity: 0.8;
+}
+.event-ai-match-label {
+    font-size: 0.7rem;
+    color: var(--text-muted, #888);
+    font-family: ui-monospace, monospace;
+    margin-top: 2px;
+}
+.event-ai-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin-top: 4px;
+}
+.event-ai-tag {
+    background: var(--bg-tertiary, #141414);
+    color: var(--text-muted, #888);
+    font-size: 0.62rem;
+    padding: 1px 6px;
+    border-radius: 8px;
+}
+.ai-search-tier-divider {
+    padding: 8px 12px;
+    font-size: 0.72rem;
+    font-family: ui-monospace, monospace;
+    border-bottom: 1px solid var(--border, #3a3a3a);
+    background: var(--bg-tertiary, #141414);
+}
+.ai-search-tier-confident { color: #4ade80; }
+.ai-search-tier-possible  { color: #ffb800; }
+.ai-search-tier-none      { color: #f87171; }
+
+/* Toast for first-run prompt — positioned TOP-right so it doesn't collide
+   with the persistent indexing widget at bottom-right */
+.ai-search-toast {
+    position: fixed;
+    top: 64px; right: 20px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 14px 16px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    max-width: 360px;
+    z-index: 10001;
+    font-size: 0.88rem;
+    line-height: 1.5;
+}
+.ai-search-toast-title { font-weight: 600; margin-bottom: 4px; }
+.ai-search-toast-actions { margin-top: 10px; display: flex; gap: 8px; justify-content: flex-end; }
+.ai-search-toast-btn {
+    padding: 4px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    border: 1px solid var(--border, #3a3a3a);
+    background: transparent;
+    color: var(--text-primary);
+}
+.ai-search-toast-btn.primary {
+    background: var(--accent, #4a9eff);
+    color: white;
+    border-color: var(--accent, #4a9eff);
+}
+
+/* ==================== AI Search Timeline Heatmap ==================== */
+.timeline-ai-heatmap {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;   /* visual only — clicks fall through to the timeline */
+    z-index: 1;
+    /* NOTE: no mix-blend-mode — it forces software compositing for the whole
+       stacking context, which starves the hardware video overlay slots on
+       Intel integrated GPUs (2-slot limit). We use straight alpha instead. */
+}
+
+/* Autopilot timeline layer — thin colored strip at bottom of the scrub bar */
+.timeline-autopilot-layer {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: auto;
+    z-index: 2;   /* above heatmap, below scrubber */
+    cursor: default;
+}
+
+/* ==================== Recording Health Badge ==================== */
+.health-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    font-size: 0.7rem;
+    font-weight: 700;
+    line-height: 1;
+    cursor: help;
+    margin-left: 2px;
+}
+.health-badge.health-minor {
+    background: rgba(255, 184, 0, 0.2);
+    color: #ffb800;
+    border: 1px solid rgba(255, 184, 0, 0.5);
+}
+.health-badge.health-warning {
+    background: rgba(248, 113, 113, 0.2);
+    color: #f87171;
+    border: 1px solid rgba(248, 113, 113, 0.55);
+}
+
+/* ==================== Intervention Severity Badge ==================== */
+.severity-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 0.64rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    line-height: 1.3;
+    cursor: help;
+    margin-left: 3px;
+    text-transform: uppercase;
+}
+.severity-badge.severity-moderate {
+    background: rgba(250, 204, 21, 0.18);
+    color: #facc15;
+    border: 1px solid rgba(250, 204, 21, 0.55);
+}
+.severity-badge.severity-severe {
+    background: rgba(251, 146, 60, 0.22);
+    color: #fb923c;
+    border: 1px solid rgba(251, 146, 60, 0.6);
+}
+.severity-badge.severity-critical {
+    background: rgba(248, 113, 113, 0.25);
+    color: #f87171;
+    border: 1px solid rgba(248, 113, 113, 0.7);
+    animation: pulse-critical 1.6s ease-in-out infinite;
+}
+@keyframes pulse-critical {
+    0%, 100% { box-shadow: 0 0 3px rgba(248,113,113,0.5); }
+    50%      { box-shadow: 0 0 10px rgba(248,113,113,0.9); }
+}
+.severity-badge.clickable { cursor: pointer; }
+.severity-badge.clickable:hover { filter: brightness(1.2); }
+
+/* ==================== Launch / Full-Throttle Badge ==================== */
+/* Only rendered when an event has at least one detected launch. Pill
+   shape matches the severity badge for visual rhythm; checker-flag
+   emoji + green ink reads as "performance highlight" without
+   competing with the warning palette used by severity/health. */
+.launch-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    padding: 1px 7px;
+    border-radius: 10px;
+    font-size: 0.64rem;
+    font-weight: 700;
+    line-height: 1.4;
+    letter-spacing: 0.02em;
+    background: rgba(74, 222, 128, 0.16);
+    color: #4ade80;
+    border: 1px solid rgba(74, 222, 128, 0.45);
+}
+
+/* Popover listing each detected severity moment */
+.severity-popover {
+    position: fixed;
+    z-index: 10000;
+    background: #2d2d2d;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+    padding: 4px;
+    min-width: 220px;
+    max-width: 320px;
+    font-size: 0.75rem;
+    color: #e0e0e0;
+}
+.severity-popover-row {
+    display: grid;
+    grid-template-columns: auto 1fr auto auto;
+    gap: 8px;
+    align-items: center;
+    padding: 6px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+.severity-popover-row:hover { background: #3a3a3a; }
+.severity-popover-row .sev-tier {
+    font-weight: 700;
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 8px;
+}
+.severity-popover-row.sev-moderate .sev-tier {
+    color: #facc15; background: rgba(250,204,21,0.15); border: 1px solid rgba(250,204,21,0.4);
+}
+.severity-popover-row.sev-severe .sev-tier {
+    color: #fb923c; background: rgba(251,146,60,0.2); border: 1px solid rgba(251,146,60,0.5);
+}
+.severity-popover-row.sev-critical .sev-tier {
+    color: #f87171; background: rgba(248,113,113,0.22); border: 1px solid rgba(248,113,113,0.6);
+}
+.severity-popover-row .sev-kind { color: #e0e0e0; }
+.severity-popover-row .sev-g { color: #9ca3af; font-variant-numeric: tabular-nums; }
+.severity-popover-row .sev-time { color: #4a9eff; font-variant-numeric: tabular-nums; }

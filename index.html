@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
     <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
-    <link rel="stylesheet" href="styles/main.css?v=52">
+    <link rel="stylesheet" href="styles/main.css?v=58">
     <link rel="stylesheet" href="styles/plate-enhancer.css?v=8">
 </head>
 <body>
@@ -145,6 +145,33 @@
                 <div class="tab-content">
                     <!-- Events Tab -->
                     <div id="eventsTab" class="tab-pane active">
+                        <!-- AI Search panel: collapsible, hidden until index is ready -->
+                        <div id="aiSearchBar" class="ai-search-panel" style="display:none;">
+                            <div class="ai-search-header" id="aiSearchHeader">
+                                <div class="ai-search-header-content">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;">
+                                        <circle cx="11" cy="11" r="7"/>
+                                        <line x1="16.5" y1="16.5" x2="21" y2="21"/>
+                                    </svg>
+                                    <span>AI Search</span>
+                                    <span class="ai-search-badge" id="aiSearchBadge"></span>
+                                </div>
+                                <div class="ai-search-header-right">
+                                    <span class="ai-search-beta-pill" title="This feature is in beta — you may see occasional issues">BETA</span>
+                                    <svg class="ai-search-collapse-icon" id="aiSearchCollapseIcon" width="10" height="10" viewBox="0 0 10 10" fill="currentColor">
+                                        <path d="M2 3.5 L5 6.5 L8 3.5 Z"/>
+                                    </svg>
+                                </div>
+                            </div>
+                            <div class="ai-search-content" id="aiSearchContent">
+                                <div class="ai-search-row">
+                                    <input type="text" id="aiSearchInput" class="ai-search-input" placeholder="Search: parking garage, night drive…" />
+                                    <button id="aiSearchClearBtn" class="ai-search-clear" title="Clear search">×</button>
+                                </div>
+                                <div id="aiSearchChips" class="ai-search-chips"></div>
+                                <div id="aiSearchResultsHeader" class="ai-search-results-header" style="display:none;"></div>
+                            </div>
+                        </div>
                         <div id="eventList" class="event-list">
                             <div class="empty-state" id="emptyState">
                                 <p data-i18n="sidebar.emptyState">👆 Click "Select TeslaCam Folder" to get started</p>
@@ -362,6 +389,8 @@
                         </div>
                         <div id="timeline" class="timeline">
                             <div id="timelineProgress" class="timeline-progress"></div>
+                            <canvas id="timelineAiHeatmap" class="timeline-ai-heatmap" style="display:none;"></canvas>
+                            <canvas id="timelineAutopilotLayer" class="timeline-autopilot-layer" style="display:none;"></canvas>
                             <div id="timelineScrubber" class="timeline-scrubber"></div>
                             <div id="timelineClips" class="timeline-clips"></div>
                         </div>
@@ -810,38 +839,44 @@
     <script src="vendor/nacl-fast.min.js"></script>
 
     <!-- Diagnostics logger (load very early to capture console from app start) -->
-    <script src="js/diagnosticsLogger.js?v=1"></script>
+    <script src="js/diagnosticsLogger.js?v=2"></script>
 
     <!-- Background scheduler — orchestrates non-critical work tiers -->
-    <script src="js/backgroundScheduler.js?v=1"></script>
+    <script src="js/backgroundScheduler.js?v=2"></script>
 
     <!-- i18n (load first) -->
     <script src="js/i18n.js?v=2"></script>
 
     <!-- App Modules -->
+    <script src="js/cameraIds.js?v=1"></script>
     <script src="js/sidebarResize.js"></script>
     <script src="js/eventFilter.js"></script>
-    <script src="js/filterPanel.js"></script>
+    <script src="js/filterPanel.js?v=3"></script>
     <script src="js/mapView.js?v=10"></script>
     <script src="js/folderManager.js"></script>
     <script src="js/folderParser.js?v=3"></script>
-    <script src="js/eventBrowser.js?v=3"></script>
-    <script src="js/videoPlayer.js?v=9"></script>
-    <script src="js/thumbnailCache.js?v=6"></script>
-    <script src="js/commandPalette.js?v=1"></script>
-    <script src="js/fileSystemObserver.js?v=3"></script>
-    <script src="js/timeline.js?v=8"></script>
-    <script src="js/syncController.js?v=2"></script>
+    <script src="js/seiInsights.js?v=1"></script>
+    <script src="js/interventionSeverity.js?v=2"></script>
+    <script src="js/eventInsightsCache.js?v=3"></script>
+    <script src="js/insightsScanner.js?v=3"></script>
+    <script src="js/insightsScannerUI.js?v=1"></script>
+    <script src="js/eventBrowser.js?v=9"></script>
+    <script src="js/videoPlayer.js?v=21"></script>
+    <script src="js/thumbnailCache.js?v=10"></script>
+    <script src="js/commandPalette.js?v=2"></script>
+    <script src="js/fileSystemObserver.js?v=5"></script>
+    <script src="js/timeline.js?v=16"></script>
+    <script src="js/syncController.js?v=4"></script>
     <script src="js/layoutConfig.js?v=3"></script>
-    <script src="js/layoutRenderer.js?v=7"></script>
+    <script src="js/layoutRenderer.js?v=10"></script>
     <script src="js/layoutManager.js?v=10"></script>
     <script src="js/layoutEditor.js?v=2"></script>
-    <script src="js/screenshotCapture.js?v=6"></script>
+    <script src="js/screenshotCapture.js?v=8"></script>
     <script src="js/videoEnhancer.js"></script>
     <script src="js/seiExtractor.js?v=3"></script>
-    <script src="js/seiDiagnostics.js?v=3"></script>
-    <script src="js/telemetryOverlay.js?v=11"></script>
-    <script src="js/miniMapOverlay.js?v=18"></script>
+    <script src="js/seiDiagnostics.js?v=6"></script>
+    <script src="js/telemetryOverlay.js?v=14"></script>
+    <script src="js/miniMapOverlay.js?v=24"></script>
     <script src="js/weatherService.js"></script>
     <script src="js/elevationService.js?v=2"></script>
     <script src="js/speedLimitService.js?v=7"></script>
@@ -852,24 +887,35 @@
     <script src="js/streetViewOverlay.js?v=2"></script>
     <script src="js/eventDataBackup.js"></script>
     <script src="js/notesManager.js?v=1"></script>
-    <script src="js/videoExport.js?v=35"></script>
-    <script src="js/videoExportFast.js?v=2"></script>
-    <script src="js/clipMarking.js"></script>
-    <script src="js/insuranceReport.js?v=11"></script>
-    <script src="js/settingsManager.js?v=14"></script>
-    <script src="js/versionManager.js?v=24"></script>
-    <script src="js/statisticsManager.js?v=1"></script>
+    <script src="js/videoExport.js?v=59"></script>
+    <script src="js/videoExportFast.js?v=11"></script>
+    <script src="js/multiCameraExportDecoder.js?v=3"></script>
+    <script src="js/clipMarking.js?v=3"></script>
+    <script src="js/insuranceReport.js?v=12"></script>
+    <script src="js/settingsManager.js?v=23"></script>
+    <script src="js/versionManager.js?v=27"></script>
+    <script src="js/statisticsManager.js?v=2"></script>
     <script src="js/helpModal.js?v=6"></script>
     <script src="js/quickStartGuide.js?v=3"></script>
-    <script src="js/offlinePackager.js?v=2"></script>
+    <script src="js/offlinePackager.js?v=3"></script>
+    <!-- AI Search (CLIP + WebCodecs). Loaded but inactive until user opts in via Settings. -->
+    <script src="https://cdn.jsdelivr.net/npm/mp4box@0.5.2/dist/mp4box.all.min.js"></script>
+    <script src="js/fastFrameExtractor.js?v=4"></script>
+    <script src="js/webCodecsVideoElement.js?v=3"></script>
+    <script src="js/videoStateRecorder.js?v=3"></script>
+    <script src="js/aiSearch.js?v=17"></script>
+    <script src="js/aiSearchUI.js?v=18"></script>
+    <script src="js/aiSearchHeatmap.js?v=4"></script>
+    <script src="js/autopilotTimelineLayer.js?v=3"></script>
+
     <script src="js/driveSync.js?v=4"></script>
     <script src="js/driveSyncUI.js?v=2"></script>
     <script src="js/regionTracker.js?v=5"></script>
-    <script src="js/frameStacker.js?v=69"></script>
-    <script src="js/plateRecognizer.js?v=4"></script>
-    <script src="js/plateEnhancer.js?v=90"></script>
-    <script src="js/plateDetector.js?v=13"></script>
-    <script src="js/plateBlur.js?v=17"></script>
-    <script src="js/app.js?v=42"></script>
+    <script src="js/frameStacker.js?v=73"></script>
+    <script src="js/plateRecognizer.js?v=8"></script>
+    <script src="js/plateEnhancer.js?v=93"></script>
+    <script src="js/plateDetector.js?v=17"></script>
+    <script src="js/plateBlur.js?v=20"></script>
+    <script src="js/app.js?v=57"></script>
 </body>
 </html>

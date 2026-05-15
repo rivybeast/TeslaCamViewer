@@ -19,12 +19,79 @@ class VersionManager {
 
         // Current version - UPDATE THIS when releasing new features
         // Format: Year.Week.DayOfWeek.Release
-        this.currentVersion = '2026.17.4.1';
+        this.currentVersion = '2026.21.1.1';
 
         // Changelog with feature identifiers for "what's new" dots
         // Each entry has: version, date, title, and features array
         // Features have: id (for tracking seen state), text, elementSelector (optional)
         this.changelog = [
+            {
+                version: '2026.21.1.1',
+                date: '2026-05-18',
+                title: 'AI Search, WebCodecs Player, Recording Health & Launch Highlights',
+                features: [
+                    {
+                        id: 'ai-search-clip',
+                        text: 'AI Search (BETA): semantic search across your event clips using a CLIP model that runs locally on your GPU. Type natural-language queries like "parking garage" or "night drive" — opt-in via Settings → AI Search.',
+                        elementSelector: ['#settingsBtn', '.settings-nav-item[data-tab="ai-search"]', '#ai-search-enable-btn']
+                    },
+                    {
+                        id: 'webcodecs-player',
+                        text: 'New WebCodecs-backed video player runs in parallel with the standard player — noticeably faster seeks, smoother scrubbing, and less buffering on large events. Opt-in (BETA) under Settings → Advanced → Performance.',
+                        elementSelector: ['#settingsBtn', '.settings-nav-item[data-tab="advanced"]', '#setting-useWebCodecsPlayer']
+                    },
+                    {
+                        id: 'recording-health-badge',
+                        text: 'Event cards now show a small amber or red badge when an event has missing cameras, very short clips, or interrupted recordings. Healthy events stay unbadged — clean cards by default.',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'launch-highlights',
+                        text: 'Auto-detected full-throttle launches: a 🏁 chip on event cards counts the number of launches, and the timeline gets a "🏁 Launch" bookmark at the start of each one. Click the bookmark to jump straight to it.',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'autopilot-timeline-layer',
+                        text: 'Timeline gains an Autopilot / FSD activity strip — see at a glance when each segment of an event was on AP, hands-off FSD, or human-driven. Fully zoom-aware.',
+                        elementSelector: '#timeline'
+                    },
+                    {
+                        id: 'intervention-severity',
+                        text: 'Intervention Severity badges on event cards: a pill rating each event\'s hardest brake, sharpest lateral jolt, or impact (mild → moderate → severe → critical). Click the pill for a popover of each peak moment.',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'insights-scanner',
+                        text: 'Background Insights Scanner: pre-computes severity, recording health, and launches for every event in the library so the badges appear instantly when the app opens. Pauses automatically during playback.',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'export-resolution-selector',
+                        text: 'Export resolution selector: pick Native / 1080p / 720p before exporting. Lower resolutions run faster, finish quicker, and put much less load on the GPU encoder.',
+                        elementSelector: ['#settingsBtn', '.settings-nav-item[data-tab="export"]', '#setting-exportResolution']
+                    },
+                    {
+                        id: 'plate-blur-smoothness',
+                        text: 'Plate-blur detection cadence rewrite: blurs track plates more smoothly across frames and re-acquire faster after camera changes, with less per-frame GPU pressure.',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'gap-marker-zoom-fix',
+                        text: 'Fixed: the yellow/black "missing clips" indicator on the timeline now correctly moves with the timeline when zoomed.',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'sentry-minimap-export-fix',
+                        text: 'Fixed: Sentry events without telemetry data now correctly render the mini-map in screenshots and exports (using event.json GPS as fallback).',
+                        elementSelector: null
+                    },
+                    {
+                        id: 'gpu-export-diagnostics',
+                        text: 'Better diagnostics when an export fails due to GPU issues (Windows TDR, hardware encoder hang, context loss). The error dialog now suggests specific mitigations, and the diagnostics log captures codec / dimensions / frame count for support.',
+                        elementSelector: null
+                    }
+                ]
+            },
             {
                 version: '2026.17.4.1',
                 date: '2026-04-23',

@@ -131,7 +131,7 @@ class PlateEnhancer {
             if (!cameraId) return;
 
             // Check if video is loaded
-            const video = container.querySelector('video');
+            const video = container.querySelector('video, canvas.video-player');
             if (!video || !video.src || video.readyState < 2) return;
 
             // Add highlight on hover
@@ -180,7 +180,7 @@ class PlateEnhancer {
             container.addEventListener('contextmenu', this.handleContextMenu);
 
             // Also attach to the video element itself to override browser's default menu
-            const video = container.querySelector('video');
+            const video = container.querySelector('video, canvas.video-player');
             if (video) {
                 video.addEventListener('contextmenu', (e) => {
                     e.preventDefault();
@@ -222,7 +222,7 @@ class PlateEnhancer {
         }
 
         // Don't show if no video is loaded
-        const video = e.currentTarget.querySelector('video');
+        const video = e.currentTarget.querySelector('video, canvas.video-player');
         if (!video || !video.src || video.readyState < 2) {
             return;
         }
@@ -257,7 +257,7 @@ class PlateEnhancer {
      * Get camera ID from video container
      */
     getCameraIdFromContainer(container) {
-        const video = container.querySelector('video');
+        const video = container.querySelector('video, canvas.video-player');
         if (!video) return null;
 
         const id = video.id;
@@ -278,6 +278,16 @@ class PlateEnhancer {
     createContextMenu(x, y, cameraId) {
         const menu = document.createElement('div');
         menu.className = 'plate-enhancer-context-menu';
+        // Build menu items conditionally — AI Search option appears only if
+        // the user has enabled AI Search for the current library.
+        const aiEnabled = !!window.aiSearch?.state?.enabled;
+        const currentEvent = window.app?.eventBrowser?.selectedEvent;
+        const aiHtml = (aiEnabled && currentEvent)
+            ? `<div class="plate-enhancer-context-menu-item" data-action="ai-deep-index">
+                   <svg viewBox="0 0 24 24"><path d="M13 3L4 14h7l-1 7 9-11h-7l1-7z"/></svg>
+                   <span>Deep-index for AI Search</span>
+               </div>`
+            : '';
         menu.innerHTML = `
             <div class="plate-enhancer-context-menu-item" data-action="enhance">
                 <svg viewBox="0 0 24 24">
@@ -286,6 +296,7 @@ class PlateEnhancer {
                 </svg>
                 <span>Enhance Region...</span>
             </div>
+            ${aiHtml}
         `;
 
         // Position menu
@@ -308,6 +319,16 @@ class PlateEnhancer {
             this.removeContextMenu();
             this.startSelection(cameraId);
         });
+        // Wire AI deep-index if present
+        const aiItem = menu.querySelector('[data-action="ai-deep-index"]');
+        if (aiItem) {
+            aiItem.addEventListener('click', async () => {
+                this.removeContextMenu();
+                const ev = window.app?.eventBrowser?.selectedEvent;
+                if (!ev || !window.aiSearchUI) return;
+                await window.aiSearchUI.runDeepIndex(ev.name, null);
+            });
+        }
 
         return menu;
     }
@@ -372,7 +393,7 @@ class PlateEnhancer {
         const videoContainers = document.querySelectorAll('.video-container');
 
         videoContainers.forEach(container => {
-            const video = container.querySelector('video');
+            const video = container.querySelector('video, canvas.video-player');
             if (!video || !video.src) return;
 
             // Skip cameras without loaded video (e.g., pillar cameras when event doesn't have them)
@@ -465,7 +486,7 @@ class PlateEnhancer {
         if (!overlay) return;
 
         const rect = container.getBoundingClientRect();
-        const video = container.querySelector('video');
+        const video = container.querySelector('video, canvas.video-player');
 
         // Calculate where the video actually displays within the container
         // (accounting for object-fit: contain letterboxing)

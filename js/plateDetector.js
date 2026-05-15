@@ -79,7 +79,9 @@ class PlateDetector {
             this._reportProgress('Creating inference session...', 90);
 
             const sessionOptions = {
-                executionProviders: ['wasm'],
+                // WebGPU with WASM fallback — big speedup on capable systems.
+                // Falls back automatically if WebGPU isn't available.
+                executionProviders: ['webgpu', 'wasm'],
                 graphOptimizationLevel: 'all',
                 enableCpuMemArena: true,
                 enableMemPattern: true

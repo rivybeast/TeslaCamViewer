@@ -86,6 +86,106 @@ class EventBrowser {
     }
 
     /**
+     * Compute recording health for an event. Used to surface obvious issues
+     * (missing cameras, truncated clips, missing metadata) as a sidebar
+     * badge so users can skip or investigate problematic events before
+     * loading them.
+     *
+     * Status tiers:
+     *   healthy  — no issues, no badge shown (clean UI)
+     *   minor    — one small issue, yellow "!" badge
+     *   warning  — multiple issues or severe one, orange "⚠" badge
+     *
+     * All checks are fast property reads — safe to call for every event row.
+     *
+     * @param {Object} event
+     * @returns {{status: string, issues: string[], icon: string}}
+     */
+    computeRecordingHealth(event) {
+        const issues = [];
+
+        // Virtual/aggregate events (hour-grouped RecentClips) — no health concept
+        if (event.isVirtual || event.isEmpty) {
+            return { status: 'healthy', issues: [], icon: '' };
+        }
+        if (!event.clipGroups || event.clipGroups.length === 0) {
+            return { status: 'warning', issues: ['No video clips'], icon: '⚠' };
+        }
+
+        // 1. Missing cameras per clip group. RecentClips are Tesla's rolling
+        // buffer — every camera records to it continuously, so they should
+        // have the same camera completeness as saved/sentry events. Any
+        // missing camera here means data was lost or copied incompletely.
+        {
+            const expectedCams = event.hasPillarCameras ? 6 : 4;
+            let incompleteGroups = 0;
+            let missingCamsSet = new Set();
+            const standardCams = ['front', 'back', 'left_repeater', 'right_repeater'];
+            const pillarCams = ['left_pillar', 'right_pillar'];
+            const expectedList = event.hasPillarCameras ? [...standardCams, ...pillarCams] : standardCams;
+            for (const g of event.clipGroups) {
+                const clips = g.clips || {};
+                const present = Object.keys(clips).length;
+                if (present < expectedCams) {
+                    incompleteGroups++;
+                    for (const c of expectedList) if (!clips[c]) missingCamsSet.add(c);
+                }
+            }
+            if (incompleteGroups > 0) {
+                const camList = Array.from(missingCamsSet).join(', ');
+                issues.push(`${incompleteGroups} of ${event.clipGroups.length} clip groups missing ${camList}`);
+            }
+        }
+
+        // 2. Missing event.json metadata (SavedClips/SentryClips should have one)
+        if ((event.type === 'SavedClips' || event.type === 'SentryClips') && !event.metadata) {
+            issues.push('No event.json metadata (may be partial save)');
+        }
+
+        // 3. Very short event — likely interrupted
+        // Sentry events are normally ~10 min (10 clips). Anything <3 clips is suspect.
+        if (event.type === 'SentryClips' && event.clipGroups.length < 3) {
+            issues.push(`Only ${event.clipGroups.length} clip${event.clipGroups.length === 1 ? '' : 's'} — recording may have been interrupted`);
+        }
+
+        // 4. SavedClips are user-triggered and typically 11 clips (10 min leading
+        // up to save). Very short ones may indicate a failed save.
+        if (event.type === 'SavedClips' && event.clipGroups.length < 2) {
+            issues.push(`Only ${event.clipGroups.length} clip${event.clipGroups.length === 1 ? '' : 's'} — save may have failed to capture full buffer`);
+        }
+
+        // 5. SEI-derived issues (hydrated from eventInsightsCache by
+        // app._bulkHydrateInsightBadges / _hydrateInsightsFromCache).
+        // Frame-count check needs SEI parsing, so it only contributes
+        // once the background scanner or the live load has populated
+        // event._recordingHealth — until then we silently skip it.
+        const sei = event._recordingHealth;
+        if (sei && sei.shortClipCount > 0) {
+            issues.push(`${sei.shortClipCount} clip${sei.shortClipCount === 1 ? '' : 's'} with very few frames — possible dropped recording`);
+        }
+
+        if (issues.length === 0) {
+            return { status: 'healthy', issues: [], icon: '' };
+        }
+        if (issues.length === 1) {
+            return { status: 'minor', issues, icon: '!' };
+        }
+        return { status: 'warning', issues, icon: '⚠' };
+    }
+
+    /**
+     * Build the launch-count chip ("🏁 ×3"). Only call when count > 0;
+     * silent on quiet events keeps the card uncluttered.
+     */
+    _buildLaunchBadge(launchCount) {
+        const span = document.createElement('span');
+        span.className = 'launch-badge';
+        span.title = `${launchCount} full-throttle launch${launchCount === 1 ? '' : 'es'} detected`;
+        span.textContent = launchCount === 1 ? '🏁' : `🏁 ×${launchCount}`;
+        return span;
+    }
+
+    /**
      * Check if an event has any bookmarks
      * @param {string} eventName
      * @returns {boolean}
@@ -303,6 +403,156 @@ class EventBrowser {
         this.events = events;
         this.selectedEvent = null;
         this.render();
+        // Notify AI Search + other listeners that a new library loaded
+        window.dispatchEvent(new CustomEvent('folder-loaded', { detail: { eventCount: events.length } }));
+    }
+
+    /** Public alias so aiSearchUI can navigate to events by object reference. */
+    loadEvent(event) {
+        if (!event) return;
+        const el = this.container.querySelector(`[data-event-name="${CSS.escape(event.name)}"]`);
+        if (el) el.click();
+    }
+
+    /** Public alias for re-rendering the whole list (used when clearing AI search). */
+    renderEvents() { this.render(); }
+
+    /**
+     * Refresh the badges on a specific event's sidebar card without
+     * re-rendering the whole list. Called after async computations
+     * (severity score, etc.) finish.
+     * @param {string} eventName
+     */
+    refreshEventBadges(eventName) {
+        const event = (this.events || []).find(e => e.name === eventName);
+        if (!event) return;
+        const item = this.container.querySelector(`.event-item[data-event-name="${CSS.escape(eventName)}"]`);
+        if (!item) return;
+        const header = item.querySelector('.event-item-header');
+        if (!header) return;
+
+        // Remove any existing badges we own; leave bookmark/notes alone
+        header.querySelectorAll('.health-badge, .severity-badge, .launch-badge').forEach(el => el.remove());
+
+        const health = this.computeRecordingHealth(event);
+        const severity = event._severityScore;
+        const launches = Array.isArray(event._launches) ? event._launches : null;
+        const typeSpan = header.querySelector('.event-type');
+        if (!typeSpan) return;
+
+        // Insertion uses insertAdjacentElement('afterend'), which inserts
+        // right after the anchor — so the last badge inserted ends up
+        // CLOSEST to the type pill. Insert in reverse of desired left-to-
+        // right order: launches → health → severity.
+        if (launches && launches.length > 0) {
+            typeSpan.insertAdjacentElement('afterend', this._buildLaunchBadge(launches.length));
+        }
+        if (health.status !== 'healthy') {
+            const hb = document.createElement('span');
+            hb.className = `health-badge health-${health.status}`;
+            hb.title = 'Recording health issues:\n• ' + health.issues.join('\n• ');
+            hb.textContent = health.icon;
+            typeSpan.insertAdjacentElement('afterend', hb);
+        }
+        if (severity && severity.tier && severity.tier !== 'mild') {
+            typeSpan.insertAdjacentElement('afterend', this._buildSeverityBadge(event, severity));
+        }
+    }
+
+    /**
+     * Build a clickable severity badge. Click opens a popover listing each
+     * detected event; clicking a row selects the parent event (if needed)
+     * and seeks the player to the peak time. Keeps the surrounding
+     * event-item click from stealing the tap.
+     */
+    _buildSeverityBadge(event, severity) {
+        const sb = document.createElement('span');
+        sb.className = `severity-badge severity-${severity.tier} clickable`;
+        sb.title = severity.detailText;
+        sb.textContent = severity.label;
+        sb.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this._showSeverityPopover(event, severity, sb);
+        });
+        return sb;
+    }
+
+    /**
+     * Show a small popover anchored to a severity badge. Lists each detected
+     * event with its time, kind, and peak g; clicking a row seeks there.
+     */
+    _showSeverityPopover(event, severity, anchor) {
+        // Close any existing popover first
+        document.querySelectorAll('.severity-popover').forEach(p => p.remove());
+        const events = (severity.events || []).slice().sort((a, b) => a.peakTime - b.peakTime);
+        if (events.length === 0) return;
+
+        const pop = document.createElement('div');
+        pop.className = 'severity-popover';
+
+        const fmt = (sec) => {
+            const mm = Math.floor(sec / 60);
+            const ss = Math.round(sec % 60).toString().padStart(2, '0');
+            return `${mm}:${ss}`;
+        };
+        const kindLabel = (k) => k === 'brake' ? 'Hard brake'
+            : k === 'lateral' ? 'Lateral jolt' : 'Impact';
+
+        for (const ev of events) {
+            const row = document.createElement('div');
+            row.className = `severity-popover-row sev-${ev.tier}`;
+            row.innerHTML = `
+                <span class="sev-tier">${ev.label}</span>
+                <span class="sev-kind">${kindLabel(ev.kind)}</span>
+                <span class="sev-g">${ev.peakG.toFixed(2)}g</span>
+                <span class="sev-time">${fmt(ev.peakTime)}</span>
+            `;
+            row.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                pop.remove();
+                // If user isn't already on this event, load it first
+                if (this.selectedEvent?.name !== event.name) {
+                    await new Promise((resolve) => {
+                        const origCb = this.onEventSelect;
+                        this.onEventSelect = async (ev2) => {
+                            if (origCb) await origCb(ev2);
+                            this.onEventSelect = origCb;
+                            resolve();
+                        };
+                        this.selectEvent(event);
+                    });
+                }
+                // Seek once the player has the event loaded
+                const vp = window.app?.videoPlayer;
+                if (vp && typeof vp.seekToEventTime === 'function') {
+                    await vp.seekToEventTime(ev.peakTime);
+                }
+            });
+            pop.appendChild(row);
+        }
+
+        document.body.appendChild(pop);
+        const rect = anchor.getBoundingClientRect();
+        pop.style.left = `${Math.min(rect.left, window.innerWidth - pop.offsetWidth - 8)}px`;
+        pop.style.top = `${rect.bottom + 4}px`;
+
+        // Dismiss on outside click / escape
+        const dismiss = (e) => {
+            if (!pop.contains(e.target) && e.target !== anchor) {
+                pop.remove();
+                document.removeEventListener('mousedown', dismiss, true);
+                document.removeEventListener('keydown', onKey, true);
+            }
+        };
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                pop.remove();
+                document.removeEventListener('mousedown', dismiss, true);
+                document.removeEventListener('keydown', onKey, true);
+            }
+        };
+        document.addEventListener('mousedown', dismiss, true);
+        document.addEventListener('keydown', onKey, true);
     }
 
     /**
@@ -481,11 +731,23 @@ class EventBrowser {
         const driveBadgeHTML = event.driveLabel ?
             `<span class="drive-badge" style="background: ${event.driveColor || 'var(--accent)'};" title="${event.driveLabel}">${event.driveLabel}</span>` : '';
 
+        // Recording Health Badge — only shown when issues detected. Silent on
+        // healthy events so the UI stays clean.
+        const health = this.computeRecordingHealth(event);
+        const healthBadgeHTML = (health.status !== 'healthy')
+            ? `<span class="health-badge health-${health.status}" title="Recording health issues:\n• ${health.issues.join('\n• ')}">${health.icon}</span>`
+            : '';
+
+        // Intervention Severity Badge — now always built via helper so the
+        // initial render has the same click handler as refreshEventBadges.
+        const severity = event._severityScore;
+
         div.innerHTML = `
             ${thumbnailHTML}
             <div class="event-item-header">
                 ${driveBadgeHTML}
                 <span class="event-type ${typeClass}">${typeClass}</span>
+                ${healthBadgeHTML}
                 ${bookmarkHTML}
                 ${notesHTML}
                 <span class="event-item-date">${dateStr}</span>
@@ -511,6 +773,14 @@ class EventBrowser {
         if (!event.isEmpty && event.clipGroups && event.clipGroups.length > 0) {
             div.addEventListener('mouseenter', () => this.showPreview(event, div));
             div.addEventListener('mouseleave', () => this.hidePreview());
+        }
+
+        // Attach severity badge if already computed (with click handler)
+        if (severity && severity.tier && severity.tier !== 'mild') {
+            const typeSpan = div.querySelector('.event-type');
+            if (typeSpan) {
+                typeSpan.insertAdjacentElement('afterend', this._buildSeverityBadge(event, severity));
+            }
         }
 
         return div;
@@ -609,11 +879,19 @@ class EventBrowser {
         const driveBadgeHTML = event.driveLabel ?
             `<span class="drive-badge" style="background: ${event.driveColor || 'var(--accent)'};" title="${event.driveLabel}">${event.driveLabel}</span>` : '';
 
+        // Recording health badge
+        const health = this.computeRecordingHealth(event);
+        const healthBadgeHTML = (health.status !== 'healthy')
+            ? `<span class="health-badge health-${health.status}" title="Recording health issues:\n• ${health.issues.join('\n• ')}">${health.icon}</span>`
+            : '';
+
         div.innerHTML = `
             ${thumbnailHTML}
             <div class="event-item-header">
                 ${driveBadgeHTML}
                 <span class="event-type ${typeClass}">${typeClass}</span>
+                ${severityBadgeHTML}
+                ${healthBadgeHTML}
                 ${bookmarkHTML}
                 ${notesHTML}
                 <span class="event-item-date">${dateStr}</span>

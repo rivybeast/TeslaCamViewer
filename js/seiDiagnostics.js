@@ -145,7 +145,7 @@ class SeiDiagnostics {
         const hasPillars = !!(videoPlayer && videoPlayer.hasPillarCameras);
         if (hasPillars) signals.push('pillar-cameras-present');
 
-        const video = document.querySelector('video');
+        const video = document.querySelector('video, canvas.video-player');
         const vw = video ? video.videoWidth : 0;
         if (vw >= 1920) signals.push('resolution>=1920');
         else if (vw >= 1280) signals.push('resolution>=1280');
@@ -480,6 +480,29 @@ class SeiDiagnostics {
             </div>
 
             ${this._renderTroubleshootingSection()}
+
+            <div class="settings-section">
+                <h4>Video State Recorder</h4>
+                <p style="opacity:0.8;font-size:0.9em;">
+                    Capture detailed playback events (play, pause, waiting, seeks, buffering)
+                    for all cameras. Use this if you hit stuck buffering, stuttering, or
+                    desync bugs we haven't tracked down — reproduce the issue while
+                    recording, then export the log and attach it to your bug report.
+                </p>
+                <div id="vsrDiagStatus" style="margin-top:0.5rem;font-family:ui-monospace,monospace;font-size:0.85em;opacity:0.8;">
+                    Idle · 0 events captured
+                </div>
+                <div style="margin-top:0.5rem;">
+                    <button id="vsrDiagStart" class="btn-primary">Start recording</button>
+                    <button id="vsrDiagStop" class="btn-secondary" style="margin-left:0.5rem;display:none;">Stop</button>
+                    <button id="vsrDiagExport" class="btn-secondary" style="margin-left:0.5rem;">Export log</button>
+                    <button id="vsrDiagClear" class="btn-secondary" style="margin-left:0.5rem;">Clear</button>
+                </div>
+                <p style="opacity:0.6;font-size:0.8em;margin-top:0.5rem;">
+                    Floating control panel appears at bottom-left while recording is active.
+                    Close it with × or reopen with <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>D</kbd>.
+                </p>
+            </div>
         `;
     }
 
@@ -578,6 +601,53 @@ class SeiDiagnostics {
         }
 
         this._bindTroubleshootingEvents(rootEl);
+        this._bindVideoStateRecorderEvents(rootEl);
+    }
+
+    /**
+     * Wire up the Video State Recorder section.
+     */
+    _bindVideoStateRecorderEvents(rootEl) {
+        const rec = window.videoStateRecorder;
+        if (!rec) return;
+
+        const statusEl = rootEl.querySelector('#vsrDiagStatus');
+        const startBtn = rootEl.querySelector('#vsrDiagStart');
+        const stopBtn  = rootEl.querySelector('#vsrDiagStop');
+        const expBtn   = rootEl.querySelector('#vsrDiagExport');
+        const clrBtn   = rootEl.querySelector('#vsrDiagClear');
+        if (!statusEl || !startBtn) return;
+
+        const refreshStatus = () => {
+            if (rec.enabled) {
+                statusEl.textContent = `● Recording · ${rec.events.length} events captured`;
+                statusEl.style.color = '#f87171';
+                startBtn.style.display = 'none';
+                stopBtn.style.display = '';
+            } else {
+                statusEl.textContent = rec.events.length > 0
+                    ? `Stopped · ${rec.events.length} events captured`
+                    : 'Idle · 0 events captured';
+                statusEl.style.color = '';
+                startBtn.style.display = '';
+                stopBtn.style.display = 'none';
+            }
+        };
+        refreshStatus();
+        // Keep the status fresh while recording
+        const tick = setInterval(() => {
+            if (!rootEl.isConnected) { clearInterval(tick); return; }
+            if (rec.enabled) refreshStatus();
+        }, 500);
+
+        startBtn.addEventListener('click', () => {
+            rec.start();
+            if (typeof rec.showPanel === 'function') rec.showPanel();
+            refreshStatus();
+        });
+        stopBtn.addEventListener('click', () => { rec.stop(); refreshStatus(); });
+        expBtn.addEventListener('click', () => { rec.export(); });
+        clrBtn.addEventListener('click', () => { rec.clear(); refreshStatus(); });
     }
 
     /**

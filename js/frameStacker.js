@@ -2756,7 +2756,7 @@ class FrameStacker {
             const modelBuffer = await response.arrayBuffer();
 
             this.srSession = await ort.InferenceSession.create(modelBuffer, {
-                executionProviders: ['wasm'],
+                executionProviders: ['webgpu', 'wasm'],
                 graphOptimizationLevel: 'all'
             });
 

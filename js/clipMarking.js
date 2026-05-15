@@ -127,7 +127,21 @@ class ClipMarking {
         const totalDuration = this.timeline.getDuration();
         if (totalDuration === 0) return;
 
-        const percent = (this.inPoint / totalDuration) * 100;
+        // Honor the timeline's current zoom — getZoomedPosition returns
+        // -1 if the marker time is outside the visible window. Without
+        // this, IN/OUT used raw (time/total)*100 which is wrong as soon
+        // as the user zooms in: markers appeared way off their actual
+        // event-time positions.
+        const percent = (typeof this.timeline.getZoomedPosition === 'function')
+            ? this.timeline.getZoomedPosition(this.inPoint)
+            : (this.inPoint / totalDuration) * 100;
+
+        if (percent < 0 || percent > 100) {
+            // Outside the zoomed-visible window — keep the marker in DOM
+            // (we don't want to thrash created/destroyed) but hide it.
+            if (this.inMarker) this.inMarker.style.display = 'none';
+            return;
+        }
 
         if (!this.inMarker) {
             this.inMarker = document.createElement('div');
@@ -163,6 +177,7 @@ class ClipMarking {
             this.markersContainer.appendChild(this.inMarker);
         }
 
+        this.inMarker.style.display = '';
         this.inMarker.style.left = `${percent}%`;
     }
 
@@ -178,7 +193,15 @@ class ClipMarking {
         const totalDuration = this.timeline.getDuration();
         if (totalDuration === 0) return;
 
-        const percent = (this.outPoint / totalDuration) * 100;
+        // See updateInMarker — honor zoom via getZoomedPosition.
+        const percent = (typeof this.timeline.getZoomedPosition === 'function')
+            ? this.timeline.getZoomedPosition(this.outPoint)
+            : (this.outPoint / totalDuration) * 100;
+
+        if (percent < 0 || percent > 100) {
+            if (this.outMarker) this.outMarker.style.display = 'none';
+            return;
+        }
 
         if (!this.outMarker) {
             this.outMarker = document.createElement('div');
@@ -214,6 +237,7 @@ class ClipMarking {
             this.markersContainer.appendChild(this.outMarker);
         }
 
+        this.outMarker.style.display = '';
         this.outMarker.style.left = `${percent}%`;
     }
 

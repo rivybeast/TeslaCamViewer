@@ -112,7 +112,12 @@ class Timeline {
 
         try {
             const allBookmarks = this.getAllSavedBookmarks();
-            allBookmarks[this.currentEventId] = this.bookmarks;
+            // Only persist user-added bookmarks. Derived entries (launch
+            // flags from seiInsights, future auto-highlights) are
+            // recomputed from the insights cache on every event load —
+            // saving them here would duplicate them into localStorage and
+            // they'd accumulate every time the user switched events.
+            allBookmarks[this.currentEventId] = this.bookmarks.filter(b => !b.isLaunch);
             localStorage.setItem(this.BOOKMARKS_STORAGE_KEY, JSON.stringify(allBookmarks));
 
             // Backup to event folder if available
@@ -213,10 +218,22 @@ class Timeline {
             this.startDragging(e);
         });
 
-        // Scrub-preview thumbnail on hover
+        // Scrub-preview thumbnail on hover. Extra hide triggers because
+        // mouseleave is unreliable when cursor moves fast during a click.
         this.timeline.addEventListener('mousemove', (e) => this._handleThumbnailHover(e));
         this.timeline.addEventListener('mouseenter', (e) => this._handleThumbnailHover(e));
         this.timeline.addEventListener('mouseleave', () => this._hideThumbnailTooltip());
+        this.timeline.addEventListener('pointerleave', () => this._hideThumbnailTooltip());
+        this.timeline.addEventListener('mousedown', () => this._hideThumbnailTooltip());
+        window.addEventListener('blur', () => this._hideThumbnailTooltip());
+        // Backstop: if the user moves the cursor anywhere outside the timeline
+        // (even fast, or to a different element that intercepts mouse events),
+        // make sure the tooltip goes away. Cheap — we only mutate DOM when
+        // transitioning from visible → hidden.
+        document.addEventListener('mousemove', (e) => {
+            if (!this._thumbVisible) return;
+            if (!this.timeline.contains(e.target)) this._hideThumbnailTooltip();
+        }, { passive: true });
 
         document.addEventListener('mousemove', (e) => {
             if (this.isDragging) {
@@ -387,7 +404,12 @@ class Timeline {
         const percent = clickX / rect.width;
         const time = percent * this.totalDuration;
 
-        // Center the viewport on click position
+        // Center the viewport on click position — pan-only behavior.
+        // NOTE: does NOT seek the video. Previously triggered onSeek(time),
+        // which caused the main timeline + video to jump to the clicked
+        // point AND flashed the "Seeking" overlay any time the user merely
+        // repositioned the zoom viewport. Seeking stays exclusive to the
+        // main timeline.
         const viewDuration = this.totalDuration / this.zoomLevel;
         this.viewStart = Math.max(0, Math.min(
             this.totalDuration - viewDuration,
@@ -395,10 +417,6 @@ class Timeline {
         ));
 
         this.updateZoomDisplay();
-
-        if (this.onSeek) {
-            this.onSeek(time);
-        }
     }
 
     /**
@@ -643,6 +661,23 @@ class Timeline {
         this.renderBookmarks();
         this.rerenderClipMarkers();
 
+        // Re-render IN/OUT clip markers — they live in a sibling module
+        // (ClipMarking) but their pixel position is zoom-dependent. Without
+        // this refresh they stayed pinned to their original raw-percent
+        // positions while the rest of the timeline scaled around them.
+        const cm = window.app?.clipMarking;
+        if (cm) {
+            if (typeof cm.updateInMarker === 'function') cm.updateInMarker();
+            if (typeof cm.updateOutMarker === 'function') cm.updateOutMarker();
+        }
+
+        // Same fix applies to the canvas-based timeline overlays (AP/FSD
+        // strip, AI Search heatmap). They draw absolute time → x against
+        // the timeline's pixel width and have to redraw against the new
+        // visible window when zoom or viewStart changes.
+        try { window.autopilotTimelineLayer?.render?.(); } catch {}
+        try { window.aiSearchHeatmap?.render?.(); } catch {}
+
         // Update current position display relative to zoomed view
         this.updateTime(this.currentTime);
 
@@ -696,6 +731,13 @@ class Timeline {
         }
         if (this._nearMisses) {
             this.setNearMissMarkers(this._nearMisses);
+        }
+        // Gap markers (yellow/black barber-pole for missing-clip ranges)
+        // are zoom-dependent too — setGapMarkers uses getZoomedPosition
+        // internally and stashed _gaps/_gapClipGroups "for re-rendering
+        // on zoom", but no caller existed until now.
+        if (this._gaps && this._gapClipGroups) {
+            this.setGapMarkers(this._gaps, this._gapClipGroups);
         }
     }
 
@@ -1380,6 +1422,12 @@ class Timeline {
     }
 
     _handleThumbnailHover(e) {
+        // If a drag is active but no mouse button is actually held, the drag
+        // state got stranded (e.g. mouseup fired off-window). Recover so the
+        // tooltip isn't frozen visible.
+        if (this.isDragging && e.buttons === 0) {
+            this.isDragging = false;
+        }
         if (this.isDragging) return;
         // Stash the latest cursor x; a single rAF-scheduled frame actually
         // updates the tooltip. Prevents 200Hz mousemove events from each
@@ -1436,9 +1484,11 @@ class Timeline {
         // Only rewrite time text when the displayed second actually changes —
         // avoids ~200/sec DOM mutations on rapid mouse movement.
         const timeLabel = this._formatMmSs(eventTime);
-        if (this._lastThumbTimeLabel !== timeLabel) {
-            this._thumbnailTooltipTime.textContent = timeLabel;
-            this._lastThumbTimeLabel = timeLabel;
+        const suffix = thumb.partial ? ' · generating…' : '';
+        const fullLabel = timeLabel + suffix;
+        if (this._lastThumbTimeLabel !== fullLabel) {
+            this._thumbnailTooltipTime.textContent = fullLabel;
+            this._lastThumbTimeLabel = fullLabel;
         }
 
         // Position in viewport coordinates via transform (compositor-only).

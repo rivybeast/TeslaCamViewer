@@ -183,26 +183,49 @@ class ScreenshotCapture {
             }
         }
 
-        // Add Mini-Map overlay if enabled (skipped in privacy mode)
+        // Add Mini-Map overlay if enabled (skipped in privacy mode).
+        //
+        // Position priority — same fallback chain the live mini-map uses:
+        //   1. Telemetry SEI lat/lon — most accurate, present on saved
+        //      clips with full telemetry.
+        //   2. Event metadata est_lat/est_lon — Tesla's GPS estimate
+        //      stored in event.json. Always present on sentry events
+        //      and is what the live mini-map shows when telemetry is
+        //      missing.
+        //   3. Already-loaded position on the overlay instance — covers
+        //      events where the user opened the mini-map manually.
+        //
+        // Previously this block hard-required telemetry data, so sentry
+        // events (no telemetry) showed the mini-map live but lost it
+        // in screenshots — the user reported this discrepancy.
         const miniMapEnabled = !settings || settings.get('miniMapInExport') !== false;
         if (!privacyMode && window.app?.miniMapOverlay?.isVisible && miniMapEnabled) {
-            const telemetryData = window.app.telemetryOverlay?.currentData;
-            if (telemetryData?.latitude_deg && telemetryData?.longitude_deg) {
-                try {
-                    // Pre-cache tiles for current position before drawing
-                    await window.app.miniMapOverlay.preCacheTilesForExport([
-                        { lat: telemetryData.latitude_deg, lng: telemetryData.longitude_deg }
-                    ]);
+            try {
+                const overlay = window.app.miniMapOverlay;
+                const tele = window.app.telemetryOverlay?.currentData;
+                const event = window.app.currentEvent;
 
-                    window.app.miniMapOverlay.updatePositionForExport(
-                        telemetryData.latitude_deg,
-                        telemetryData.longitude_deg,
-                        telemetryData.heading_deg || 0
-                    );
-                    window.app.miniMapOverlay.drawToCanvas(ctx, canvas.width, canvas.height);
-                } catch (e) {
-                    console.error('[Screenshot] Mini-Map render error:', e);
+                let lat = null, lng = null, heading = 0;
+                if (tele?.latitude_deg && tele?.longitude_deg) {
+                    lat = tele.latitude_deg;
+                    lng = tele.longitude_deg;
+                    heading = tele.heading_deg || 0;
+                } else if (event?.metadata?.est_lat != null && event?.metadata?.est_lon != null) {
+                    lat = Number(event.metadata.est_lat);
+                    lng = Number(event.metadata.est_lon);
                 }
+
+                if (lat != null && lng != null) {
+                    await overlay.preCacheTilesForExport([{ lat, lng }]);
+                    overlay.updatePositionForExport(lat, lng, heading);
+                }
+
+                // drawToCanvas gates on currentLat/currentLng internally —
+                // safe to call even if we couldn't update position above
+                // (overlay may already hold a valid position).
+                overlay.drawToCanvas(ctx, canvas.width, canvas.height);
+            } catch (e) {
+                console.error('[Screenshot] Mini-Map render error:', e);
             }
         }
 

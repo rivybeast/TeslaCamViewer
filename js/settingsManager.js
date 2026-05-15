@@ -58,11 +58,26 @@ class SettingsManager {
             lastFolderHandle: null,
 
             // Export
-            exportFormat: 'webm',  // 'webm' or 'mp4'
+            exportFormat: 'mp4',   // 'webm' or 'mp4' — mp4 default since 2026.20.6.1 (WebCodecs fast path)
 
-            // Fast Export (Experimental) — WebCodecs + mp4-muxer, 5-10x faster than realtime.
-            // Falls back to MediaRecorder on any failure. MP4 output only.
-            fastExportExperimental: false,
+            // Export resolution — applied as a uniform scale on the layout's
+            // native canvas size. "Full" preserves native (no downscale),
+            // "hd" caps at 1080p height, "web" caps at 720p. "Custom" lets
+            // the user specify any height (upscale allowed).
+            exportResolution: 'full',                  // 'full' | 'hd' | 'web' | 'custom'
+            exportResolutionCustomHeight: 1920,        // used only when exportResolution === 'custom'
+
+            // Experimental WebCodecs-backed player — replaces HTML5 <video>
+            // elements with canvas + VideoDecoder rendering. Helps on Intel
+            // integrated GPUs where the 2-YUV-overlay-slot limit causes
+            // flickering with 4+ videos. Requires page reload to apply.
+            useWebCodecsPlayer: false,
+
+            // Fast Export — WebCodecs VideoDecoder + VideoEncoder path.
+            // Now default on (was experimental). Set to false to force the
+            // legacy HTML5-seek + MediaRecorder path. Kept as an emergency
+            // rollback; the UI toggle that exposed this was removed.
+            fastExportExperimental: true,
 
             // Privacy Mode Export - strips identifying metadata from exports
             privacyModeExport: false,  // When enabled, removes timestamp, GPS, location, and mini-map from exports
@@ -232,6 +247,13 @@ class SettingsManager {
                                 <path d="M19.14 12.94c.04-.31.06-.63.06-.94 0-.31-.02-.63-.06-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/>
                             </svg>
                             <span>${this.t('settings.tabs.advanced')}</span>
+                        </button>
+                        <button class="settings-nav-item ${this._activeTab === 'ai-search' ? 'active' : ''}" data-tab="ai-search">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <circle cx="11" cy="11" r="7"/>
+                                <line x1="16.5" y1="16.5" x2="21" y2="21"/>
+                            </svg>
+                            <span>AI Search</span>
                         </button>
                         <button class="settings-nav-item ${this._activeTab === 'diagnostics' ? 'active' : ''}" data-tab="diagnostics">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -449,6 +471,21 @@ class SettingsManager {
                             <span class="setting-hint">${this.t('settings.export.formatHint')}</span>
                         </div>
                         <div class="setting-row">
+                            <label for="setting-exportResolution">Export quality</label>
+                            <select id="setting-exportResolution" class="setting-select">
+                                <option value="full">Full — native layout resolution</option>
+                                <option value="hd">HD — 1080p height</option>
+                                <option value="web">Web — 720p height</option>
+                                <option value="custom">Custom — specify height</option>
+                            </select>
+                            <span class="setting-hint">Scales the export canvas. Full never downsamples; HD/Web cap but never upscale; Custom lets you pick (can upscale).</span>
+                        </div>
+                        <div class="setting-row" id="setting-row-exportResolutionCustomHeight" style="display:none;">
+                            <label for="setting-exportResolutionCustomHeight">Custom height (px)</label>
+                            <input type="number" id="setting-exportResolutionCustomHeight" class="setting-input" min="240" max="4320" step="10" style="width:120px;">
+                            <span class="setting-hint">Width is computed to preserve the layout's aspect ratio.</span>
+                        </div>
+                        <div class="setting-row">
                             <label for="setting-privacyModeExport">${this.t('settings.export.privacyMode')}</label>
                             <input type="checkbox" id="setting-privacyModeExport" class="setting-checkbox">
                             <span class="setting-hint">${this.t('settings.export.privacyModeHint')}</span>
@@ -463,11 +500,6 @@ class SettingsManager {
                             <label for="setting-showBrandingInExport">${this.t('settings.export.branding')}</label>
                             <input type="checkbox" id="setting-showBrandingInExport" class="setting-checkbox" checked>
                             <span class="setting-hint">${this.t('settings.export.brandingHint')}</span>
-                        </div>
-                        <div class="setting-row">
-                            <label for="setting-fastExportExperimental">Fast Export (Experimental)</label>
-                            <input type="checkbox" id="setting-fastExportExperimental" class="setting-checkbox">
-                            <span class="setting-hint">Uses WebCodecs + mp4-muxer for 5–10× faster-than-realtime MP4 export. Falls back to MediaRecorder on failure.</span>
                         </div>
                     </div>
                 </div>
@@ -486,6 +518,11 @@ class SettingsManager {
                             <label for="setting-memoryOptimization">${this.t('settings.performance.memoryOptimization')}</label>
                             <input type="checkbox" id="setting-memoryOptimization" class="setting-checkbox">
                             <span class="setting-hint">${this.t('settings.performance.memoryHint')}</span>
+                        </div>
+                        <div class="setting-row">
+                            <label for="setting-useWebCodecsPlayer">WebCodecs player <span class="ai-search-beta-pill" style="margin-left:6px;">BETA</span></label>
+                            <input type="checkbox" id="setting-useWebCodecsPlayer" class="setting-checkbox">
+                            <span class="setting-hint">BETA: WebCodecs-backed canvas renderer. Try this if playback stutters or feels laggy, especially on Intel integrated graphics. Default-on for everyone is planned for a future release once we've gathered feedback. Requires a page reload to apply.</span>
                         </div>
                     </div>
 
@@ -548,6 +585,11 @@ class SettingsManager {
                     </div>
                 </div>
 
+                <!-- AI Search Tab -->
+                <div class="settings-tab-content ${this._activeTab === 'ai-search' ? 'active' : ''}" data-tab-content="ai-search">
+                    ${this.renderAiSearchTab()}
+                </div>
+
                 <!-- Diagnostics Tab: SEI Unknown-Field Scanner -->
                 <div class="settings-tab-content ${this._activeTab === 'diagnostics' ? 'active' : ''}" data-tab-content="diagnostics">
                     ${window.seiDiagnostics ? window.seiDiagnostics.renderDiagnosticsTab() : '<div class="settings-section">Diagnostics module not loaded.</div>'}
@@ -565,6 +607,290 @@ class SettingsManager {
         if (window.seiDiagnostics && typeof window.seiDiagnostics.bindDiagnosticsTabEvents === 'function') {
             const diagPane = this.modal.querySelector('[data-tab-content="diagnostics"]');
             if (diagPane) window.seiDiagnostics.bindDiagnosticsTabEvents(diagPane);
+        }
+
+        // Wire up AI Search tab events
+        const aiPane = this.modal.querySelector('[data-tab-content="ai-search"]');
+        if (aiPane) this.bindAiSearchTabEvents(aiPane);
+    }
+
+    renderAiSearchTab() {
+        const status = window.aiSearch?.getStatus?.() || { enabled: false, indexing: false, eventCount: 0, frameCount: 0, model: 'base', strategy: 'sparse', webCodecs: false };
+        const eventsCount = (window.app?.eventBrowser?.events || []).length;
+        const enabledStateHtml = status.enabled
+            ? `<span style="color:#4ade80;">● Enabled</span> — ${status.eventCount} events indexed, ${status.frameCount} frames embedded`
+            : `<span style="color:#888;">○ Not enabled</span> — search is not set up yet`;
+        return `
+            <div class="settings-section">
+                <h3>AI Search</h3>
+                <p style="color:var(--text-muted, #888); font-size:0.9rem; line-height:1.5; margin:4px 0 12px;">
+                    Find events by describing the scene ("parking garage", "night drive", "pedestrian walking").
+                    Uses an on-device AI model. <strong>No video or data ever leaves your computer.</strong>
+                </p>
+
+                <div class="setting-row" style="display:block; padding:10px 0;">
+                    <div style="margin-bottom:8px;">${enabledStateHtml}</div>
+                    ${!status.webCodecs ? '<div style="color:#ffb800; font-size:0.85rem; margin-top:4px;">⚠ Your browser doesn\'t support WebCodecs — indexing will use a slower fallback path.</div>' : ''}
+                </div>
+
+                <div class="setting-row" style="display:block; padding:10px 0;">
+                    <label for="ai-search-model" style="display:block; margin-bottom:4px;">Model quality</label>
+                    <select id="ai-search-model" class="setting-select" style="width:100%; max-width:420px;">
+                        <option value="base" ${status.model === 'base' ? 'selected' : ''}>Fast — CLIP ViT-B/32 (175 MB download, 3× faster)</option>
+                        <option value="large" ${status.model === 'large' ? 'selected' : ''}>Quality — CLIP ViT-L/14 (~570 MB, more confident tags)</option>
+                    </select>
+                    <div style="color:var(--text-muted, #888); font-size:0.8rem; margin-top:4px;">The model is downloaded once and cached by your browser.</div>
+                </div>
+
+                <div class="setting-row" style="display:block; padding:10px 0;">
+                    <label for="ai-search-strategy" style="display:block; margin-bottom:4px;">Default sampling</label>
+                    <select id="ai-search-strategy" class="setting-select" style="width:100%; max-width:420px;">
+                        <option value="sparse" ${status.strategy === 'sparse' ? 'selected' : ''}>Sparse — 1 frame per clip (fast first-run)</option>
+                        <option value="motion" ${status.strategy === 'motion' ? 'selected' : ''}>Motion-filtered — every scene change (slower, catches short events)</option>
+                    </select>
+                    <div style="color:var(--text-muted, #888); font-size:0.8rem; margin-top:4px;">You can "Deep-index" individual events on demand regardless of this default.</div>
+                </div>
+
+                <div class="setting-row" style="display:block; padding:14px 0;">
+                    <button id="ai-search-enable-btn" class="setting-button" style="background:var(--accent,#4a9eff); color:white; border:none; padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:500;">
+                        ${status.enabled ? 'Re-index all events' : 'Enable and index ' + eventsCount + ' events'}
+                    </button>
+                    ${status.enabled ? '<button id="ai-search-clear-btn" class="setting-button" style="margin-left:8px; background:transparent; color:var(--err,#f87171); border:1px solid var(--err,#f87171); padding:8px 16px; border-radius:6px; cursor:pointer;">Clear index</button>' : ''}
+                </div>
+
+                <div id="ai-search-progress" style="display:none; padding:10px 0;">
+                    <div style="height:6px; background:var(--bg-tertiary,#141414); border-radius:3px; overflow:hidden; margin:6px 0;">
+                        <div id="ai-search-progress-fill" style="height:100%; background:var(--accent,#4a9eff); width:0%; transition:width 0.3s ease;"></div>
+                    </div>
+                    <div id="ai-search-progress-text" style="color:var(--text-muted,#888); font-size:0.85rem;"></div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3>Library Insights Scan</h3>
+                <p style="color:var(--text-muted); font-size:0.9rem; line-height:1.5; margin:4px 0 12px;">
+                    Pre-compute severity pills for every event in your library so they appear instantly on the sidebar the next
+                    time you open the app. Runs in the background only when you're not actively watching something, and pauses
+                    automatically if AI Search is indexing. Cancel or resume anytime. <em>This is separate from AI Search — no
+                    models or embeddings involved, just SEI telemetry parsing.</em>
+                </p>
+
+                <div class="setting-row" style="display:block; padding:10px 0;">
+                    <div id="insights-scan-cache-info" style="color:var(--text-secondary); font-size:0.88rem;"></div>
+                </div>
+
+                <div class="setting-row" style="display:block; padding:10px 0;" id="insights-scan-buttons">
+                    <!-- buttons injected by bindAiSearchTabEvents — state-driven -->
+                </div>
+
+                <div id="insights-scan-progress" style="display:none; padding:6px 0 0;">
+                    <div style="height:6px; background:var(--bg-tertiary); border-radius:3px; overflow:hidden; margin:6px 0;">
+                        <div id="insights-scan-progress-fill" style="height:100%; background:var(--accent); width:0%; transition:width 0.3s ease;"></div>
+                    </div>
+                    <div id="insights-scan-progress-text" style="color:var(--text-muted); font-size:0.85rem;"></div>
+                </div>
+            </div>
+
+            <div class="settings-section">
+                <h3>About</h3>
+                <p style="color:var(--text-muted, #888); font-size:0.85rem; line-height:1.5;">
+                    AI Search uses CLIP (OpenAI's Contrastive Language-Image Pre-training) to match your natural-language
+                    queries against video frames. The model is loaded in your browser via Transformers.js and runs
+                    entirely on your GPU (or CPU if no WebGPU is available).
+                </p>
+                <p style="color:var(--text-muted, #888); font-size:0.85rem; line-height:1.5;">
+                    Best for: <em>scene types, locations, general objects</em>. Weaker at: <em>specific colors, fine attributes</em>.
+                    If a search doesn't find what you expect, right-click the event and choose "Deep-index" to
+                    sample more frames.
+                </p>
+            </div>
+        `;
+    }
+
+    bindAiSearchTabEvents(pane) {
+        const enableBtn = pane.querySelector('#ai-search-enable-btn');
+        const clearBtn  = pane.querySelector('#ai-search-clear-btn');
+        const modelSel  = pane.querySelector('#ai-search-model');
+        const stratSel  = pane.querySelector('#ai-search-strategy');
+        const progress  = pane.querySelector('#ai-search-progress');
+        const progressFill = pane.querySelector('#ai-search-progress-fill');
+        const progressText = pane.querySelector('#ai-search-progress-text');
+
+        const progressHandler = (e) => {
+            if (!progress) return;
+            progress.style.display = 'block';
+            const { done, total, status } = e.detail;
+            const pct = total > 0 ? (done / total) * 100 : 0;
+            if (progressFill) progressFill.style.width = pct + '%';
+            if (progressText) progressText.textContent = `${done}/${total} · ${status || ''}`;
+        };
+        const statusHandler = (e) => {
+            if (!progressText) return;
+            if (e.detail.state === 'ready') {
+                progressText.textContent = e.detail.message;
+                setTimeout(() => {
+                    // Re-render the tab to show the new enabled state
+                    const stillOpen = pane.isConnected;
+                    if (stillOpen) pane.innerHTML = this.renderAiSearchTab();
+                    if (stillOpen) this.bindAiSearchTabEvents(pane);
+                }, 800);
+            } else if (e.detail.state === 'cleared') {
+                progress.style.display = 'none';
+                pane.innerHTML = this.renderAiSearchTab();
+                this.bindAiSearchTabEvents(pane);
+            } else {
+                progressText.textContent = e.detail.message;
+            }
+        };
+        window.addEventListener('ai-search:progress', progressHandler);
+        window.addEventListener('ai-search:status', statusHandler);
+
+        if (modelSel) modelSel.addEventListener('change', () => {
+            window.aiSearch.state.currentModelKey = modelSel.value;
+        });
+        if (stratSel) stratSel.addEventListener('change', () => {
+            window.aiSearch.state.strategy = stratSel.value;
+        });
+        if (enableBtn) enableBtn.addEventListener('click', async () => {
+            enableBtn.disabled = true;
+            try {
+                if (window.aiSearch.state.enabled) {
+                    await window.aiSearch.indexAll({ reindex: true, strategy: stratSel.value });
+                } else {
+                    await window.aiSearch.enable({ strategy: stratSel.value });
+                }
+            } catch (err) {
+                alert('Indexing failed: ' + err.message);
+            } finally {
+                enableBtn.disabled = false;
+            }
+        });
+        if (clearBtn) clearBtn.addEventListener('click', () => {
+            if (confirm('Clear the AI search index? You\'ll need to re-index to search again.')) {
+                window.aiSearch.clearIndex();
+            }
+        });
+
+        // ---- Library Insights Scan wiring ----
+        this._bindInsightsScanControls(pane);
+    }
+
+    /**
+     * Wire up the Library Insights Scan section at the bottom of the
+     * AI Search tab. Separated from bindAiSearchTabEvents so the AI
+     * Search concerns stay readable on their own.
+     */
+    _bindInsightsScanControls(pane) {
+        const buttonsRow = pane.querySelector('#insights-scan-buttons');
+        const cacheInfo = pane.querySelector('#insights-scan-cache-info');
+        const progress = pane.querySelector('#insights-scan-progress');
+        const progressFill = pane.querySelector('#insights-scan-progress-fill');
+        const progressText = pane.querySelector('#insights-scan-progress-text');
+        if (!buttonsRow) return;
+
+        const eligibleCount = (window.app?.allEvents || []).length;
+
+        // Render buttons based on current scanner state.
+        // The window-level scanner event listeners below outlive the
+        // settings modal — each reopen of the AI Search tab adds new
+        // listeners, and old ones keep firing with stale `pane` /
+        // `buttonsRow` closures that point at detached DOM. Bailing
+        // when the pane is no longer connected avoids the resulting
+        // "Cannot read properties of null (reading 'addEventListener')"
+        // throw without needing to track-and-remove every listener.
+        // Also: query the buttons via `buttonsRow.querySelector` instead
+        // of `pane.querySelector` so we're always reading from the
+        // innerHTML we just set, not the (potentially rebuilt) pane.
+        const renderButtons = async () => {
+            if (!buttonsRow.isConnected) return;
+            const st = window.insightsScanner?.getState?.() || { state: 'idle' };
+            const btnStyle = 'padding:8px 16px; border-radius:6px; cursor:pointer; font-weight:500;';
+            if (st.state === 'scanning' || st.state === 'paused') {
+                const pauseLabel = st.state === 'paused' ? 'Resume' : 'Pause';
+                buttonsRow.innerHTML = `
+                    <button id="insScanSettingsPause" class="setting-button" style="background:var(--accent); color:white; border:none; ${btnStyle}">${pauseLabel}</button>
+                    <button id="insScanSettingsCancel" class="setting-button" style="margin-left:8px; background:transparent; color:var(--danger); border:1px solid var(--danger); ${btnStyle}">Cancel</button>
+                `;
+                buttonsRow.querySelector('#insScanSettingsPause')?.addEventListener('click', () => {
+                    const s = window.insightsScanner.getState();
+                    if (s.state === 'paused') window.insightsScanner.resume();
+                    else window.insightsScanner.pause();
+                    setTimeout(renderButtons, 50);
+                });
+                buttonsRow.querySelector('#insScanSettingsCancel')?.addEventListener('click', () => {
+                    if (confirm('Cancel library scan? Already-scanned events will be kept.')) {
+                        window.insightsScanner.cancel();
+                        renderButtons();
+                    }
+                });
+            } else {
+                buttonsRow.innerHTML = `
+                    <button id="insScanSettingsStart" class="setting-button" style="background:var(--accent); color:white; border:none; ${btnStyle}">
+                        Scan library (${eligibleCount} events across all drives)
+                    </button>
+                    <button id="insScanSettingsClear" class="setting-button" style="margin-left:8px; background:transparent; color:var(--danger); border:1px solid var(--danger); ${btnStyle}">Clear cache</button>
+                `;
+                buttonsRow.querySelector('#insScanSettingsStart')?.addEventListener('click', async () => {
+                    const events = window.app?.allEvents || [];
+                    if (events.length === 0) { alert('No events loaded — select a TeslaCam folder first.'); return; }
+                    await window.insightsScanner.start(events);
+                    renderButtons();
+                });
+                buttonsRow.querySelector('#insScanSettingsClear')?.addEventListener('click', async () => {
+                    if (!confirm('Clear all cached severity data? You\'ll need to open each event or re-scan to get it back.')) return;
+                    await window.eventInsightsCache?.clear?.();
+                    await refreshCacheInfo();
+                });
+            }
+        };
+
+        const refreshCacheInfo = async () => {
+            if (!cacheInfo) return;
+            const size = (await window.eventInsightsCache?.size?.()) || 0;
+            cacheInfo.textContent = size > 0
+                ? `Cached insights: ${size} event${size === 1 ? '' : 's'}`
+                : 'No events cached yet.';
+        };
+
+        // Listen for scanner events and reflect in this panel
+        const onProgress = (e) => {
+            const d = e.detail || {};
+            if (!progress) return;
+            progress.style.display = 'block';
+            const pct = d.total > 0 ? (d.done / d.total) * 100 : 0;
+            if (progressFill) progressFill.style.width = pct.toFixed(1) + '%';
+            if (progressText) {
+                let line = `${d.done} / ${d.total}`;
+                if (d.currentName && !d.final) line += ' · ' + d.currentName;
+                if (d.paused) line += ' · paused';
+                progressText.textContent = line;
+            }
+            if (d.final) {
+                // Let the widget show "Done" briefly, then refresh the buttons
+                setTimeout(() => {
+                    if (progress.isConnected) progress.style.display = 'none';
+                    renderButtons();
+                    refreshCacheInfo();
+                }, 2000);
+            }
+        };
+        const onStatus = (e) => {
+            // Also refresh the buttons on any state transition so Pause↔Resume labels stay in sync
+            setTimeout(renderButtons, 20);
+            if (e.detail?.state === 'cancelled' && progress) progress.style.display = 'none';
+        };
+        window.addEventListener('insights-scan:progress', onProgress);
+        window.addEventListener('insights-scan:status', onStatus);
+
+        renderButtons();
+        refreshCacheInfo();
+
+        // If a scan is already running when this tab opens, seed the
+        // progress bar with current state instead of waiting for the
+        // next tick of progress events.
+        const st = window.insightsScanner?.getState?.();
+        if (st && (st.state === 'scanning' || st.state === 'paused')) {
+            onProgress({ detail: { done: st.done, total: st.total, currentName: st.currentEventName, paused: st.state === 'paused', etaMs: st.etaMs, failures: st.failures } });
         }
     }
 
@@ -684,8 +1010,32 @@ class SettingsManager {
                 if (key === 'mapTileProvider' && window.app?.mapView) {
                     window.app.mapView.setTileProvider(e.target.value);
                 }
+
+                // Export quality — show/hide the custom-height input
+                if (key === 'exportResolution') {
+                    const customRow = this.modal.querySelector('#setting-row-exportResolutionCustomHeight');
+                    if (customRow) {
+                        customRow.style.display = e.target.value === 'custom' ? '' : 'none';
+                    }
+                }
             });
         });
+
+        // Number-input binding (used by exportResolutionCustomHeight). The
+        // normal setting-select/setting-checkbox pattern doesn't cover it.
+        const customHeight = this.modal.querySelector('#setting-exportResolutionCustomHeight');
+        if (customHeight) {
+            customHeight.value = this.get('exportResolutionCustomHeight') || 1920;
+            customHeight.addEventListener('change', (e) => {
+                const val = parseInt(e.target.value, 10);
+                if (val > 0) this.set('exportResolutionCustomHeight', val);
+            });
+            // Initial visibility of the custom row
+            const customRow = this.modal.querySelector('#setting-row-exportResolutionCustomHeight');
+            if (customRow) {
+                customRow.style.display = this.get('exportResolution') === 'custom' ? '' : 'none';
+            }
+        }
 
         checkboxes.forEach(checkbox => {
             checkbox.addEventListener('change', (e) => {
@@ -1276,7 +1626,7 @@ class SessionManager {
     /**
      * Check if a feature is accessible
      */
-    async checkAccess(feature) {
+    async checkAccess(feature, contextId = null) {
         try {
             const hasSession = await this.hasActiveSession();
 
@@ -1291,23 +1641,56 @@ class SessionManager {
 
             // Free tier checks
             switch (feature) {
-                case 'viewEvent':
-                    const viewedCount = this._usageData?.viewedToday?.length || 0;
-                return {
-                    allowed: viewedCount < this.FREE_DAILY_EVENTS,
-                    remaining: this.FREE_DAILY_EVENTS - viewedCount,
-                    limit: this.FREE_DAILY_EVENTS,
-                    type: 'daily'
-                };
+                case 'viewEvent': {
+                    const viewedList = this._usageData?.viewedToday || [];
+                    const viewedCount = viewedList.length;
+                    // Soft lockout: a free user who hits the daily cap can
+                    // still re-view ANY of the events they've already opened
+                    // today. New events get the limit modal; old ones go
+                    // through. Lets the user keep exploring features on
+                    // their existing 10 instead of being hard-banned the
+                    // moment they hit the cap.
+                    if (contextId && viewedList.includes(contextId)) {
+                        return {
+                            allowed: true,
+                            reviewed: true,
+                            remaining: Math.max(0, this.FREE_DAILY_EVENTS - viewedCount),
+                            limit: this.FREE_DAILY_EVENTS,
+                            type: 'daily'
+                        };
+                    }
+                    return {
+                        allowed: viewedCount < this.FREE_DAILY_EVENTS,
+                        remaining: this.FREE_DAILY_EVENTS - viewedCount,
+                        limit: this.FREE_DAILY_EVENTS,
+                        type: 'daily'
+                    };
+                }
 
-            case 'exportEvent':
-                const exportedCount = this._usageData?.exportedEvents?.length || 0;
+            case 'exportEvent': {
+                const exportedList = this._usageData?.exportedEvents || [];
+                const exportedCount = exportedList.length;
+                // Soft lockout (mirrors viewEvent): a free user past the
+                // daily export cap can still re-export any event they've
+                // already exported today. Re-exporting a watermarked event
+                // doesn't burn another slot — it just regenerates the same
+                // file. New events get the limit modal; old ones go through.
+                if (contextId && exportedList.includes(contextId)) {
+                    return {
+                        allowed: true,
+                        reviewed: true,
+                        remaining: Math.max(0, this.FREE_EXPORT_EVENTS - exportedCount),
+                        limit: this.FREE_EXPORT_EVENTS,
+                        type: 'export'
+                    };
+                }
                 return {
                     allowed: exportedCount < this.FREE_EXPORT_EVENTS,
                     remaining: this.FREE_EXPORT_EVENTS - exportedCount,
                     limit: this.FREE_EXPORT_EVENTS,
                     type: 'export'
                 };
+            }
 
             case 'offlinePackage':
             case 'plateEnhancement':
@@ -2263,10 +2646,15 @@ class SessionManager {
         let title, message;
         if (type === 'daily') {
             title = 'Daily Limit Reached';
-            message = `You've viewed 10 events today. Resets at midnight.`;
+            // Friendlier copy that reassures the user they keep access to
+            // what they've already opened, instead of a hard-stop feel.
+            message = `You've viewed 10 events today. You can still re-open any of those 10 events to keep exploring features — only NEW events are gated. Limit resets at midnight.`;
         } else if (type === 'export') {
             title = 'Export Limit Reached';
-            message = `You've used your 2 free export events. Upgrade for unlimited exports.`;
+            // Mirror the daily-view modal copy: reassure the user they
+            // can still re-export their already-exported events. Only
+            // NEW events are gated.
+            message = `You've used your 2 free export events today. You can still re-export either of those events at any time — only NEW exports are gated. Limit resets at midnight, or upgrade for unlimited exports.`;
         } else {
             title = 'Feature Locked';
             message = 'This feature requires a TeslaCamViewer Pro license.';

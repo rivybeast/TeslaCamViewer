@@ -496,15 +496,34 @@ class TeslaCamViewerApp {
     }
 
     /**
-     * Check browser support for required APIs
+     * Check browser support for required APIs.
+     *
+     * showDirectoryPicker is gated on a secure context. Chrome makes it
+     * `undefined` on insecure origins (http://<lan-ip>, file://) even
+     * on browsers that fully support it on HTTPS or localhost. Without
+     * differentiating, a user testing the dev build over their LAN gets
+     * a misleading "browser doesn't support it" alert when the browser
+     * is fine and the URL is the problem.
      */
     checkBrowserSupport() {
-        if (!('showDirectoryPicker' in window)) {
+        if ('showDirectoryPicker' in window) return;
+
+        if (!window.isSecureContext) {
             alert(
-                'Your browser does not support the File System Access API.\n\n' +
-                'Please use Chrome, Edge, or another Chromium-based browser.'
+                'The File System Access API is disabled on insecure URLs.\n\n' +
+                'You\'re currently on:\n  ' + window.location.origin + '\n\n' +
+                'To select a drive, open one of:\n' +
+                '  • https://teslacamviewer.com\n' +
+                '  • http://localhost (or http://127.0.0.1)\n' +
+                '  • An HTTPS URL'
             );
+            return;
         }
+
+        alert(
+            'Your browser does not support the File System Access API.\n\n' +
+            'Please use Chrome, Edge, or another Chromium-based browser.'
+        );
     }
 
     /**
@@ -687,7 +706,7 @@ class TeslaCamViewerApp {
         const gifWarning = document.getElementById('gifWarning');
         if (exportFormatSelect) {
             // Initialize from settings
-            const savedFormat = this.settingsManager.get('exportFormat') || 'webm';
+            const savedFormat = this.settingsManager.get('exportFormat') || 'mp4';
             exportFormatSelect.value = savedFormat;
 
             // Show/hide GIF warning based on initial format
@@ -2168,6 +2187,10 @@ class TeslaCamViewerApp {
             this.eventBrowser.refreshNearMissIndicators();
         }
 
+        // Bulk-hydrate severity badges from IDB so pills appear on the
+        // cards immediately after reload — no click required.
+        this._bulkHydrateSeverityBadges(filteredEvents);
+
         // Update map with filtered events
         this.mapView.loadEvents(filteredEvents);
 
@@ -2277,12 +2300,23 @@ class TeslaCamViewerApp {
      * @param {Object} event
      */
     async onEventSelected(event) {
-        // Check session access for viewing events
+        // Check session access for viewing events. Free users hit the
+        // daily cap on the 10th NEW event, but already-viewed events
+        // stay accessible — we pass the event's compoundKey so the
+        // session manager can recognize a re-view.
         if (this.sessionManager) {
-            const access = await this.sessionManager.checkAccess('viewEvent');
+            const eventKey = event.compoundKey || event.name;
+            const access = await this.sessionManager.checkAccess('viewEvent', eventKey);
             if (!access.allowed) {
                 this.sessionManager.showLimitModal(access.type || 'daily');
                 return;
+            }
+            // Pre-cap warnings — only on the FIRST view of a NEW event,
+            // since re-views shouldn't keep nagging the user. The
+            // recordEventView side fires AFTER load below, so we read
+            // the current count here against the about-to-be-viewed key.
+            if (!access.reviewed) {
+                this._maybeShowFreeTierWarning(access);
             }
         }
 
@@ -2331,6 +2365,26 @@ class TeslaCamViewerApp {
             const totalDuration = await this.videoPlayer.getTotalDuration();
             this.timeline.setDuration(totalDuration);
             this.timeline.setClipMarkers(event.clipGroups);
+
+            // Wipe stale overlays from the previous event. near-miss markers
+            // were persisting across event switches because the detector only
+            // fires its callback when it *finds* new misses — an event with
+            // no SEI yet (or no misses) never cleared the old marker.
+            if (typeof this.timeline.setNearMissMarkers === 'function') {
+                this.timeline.setNearMissMarkers([]);
+            }
+            if (this.telemetryGraphs) {
+                this.telemetryGraphs.nearMisses = [];
+            }
+            // Clear transient severity state from whatever was selected before.
+            event._severityScore = null;
+            event._severityFromCache = false;
+
+            // Hydrate insights from IDB — fires-and-forgets; if there's a
+            // cache hit the badge + near-miss markers paint before SEI is
+            // even parsed. No cost on a cache miss.
+            this._hydrateInsightsFromCache(event);
+            this._hydrateNearMissesFromCache(event);
 
             // Clear the scrub-preview tooltip so the previous event's
             // thumbnail doesn't linger until the user hovers again.
@@ -2406,12 +2460,30 @@ class TeslaCamViewerApp {
 
             this.hideLoading();
 
+            // AI Search match navigation — if the user clicked an AI-filtered
+            // event, consume the pending seek now (with cached clip durations
+            // available) and use it IN PLACE of the sentry auto-seek below.
+            // Without this, sentry-auto-seek ran after our seek and overwrote
+            // it, sending the player to the sentry trigger instead of the AI
+            // match time.
+            const aiSeekSec = window.aiSearchUI?.consumePendingSeek?.(event.name);
+
             // For Sentry events, seek to 1 minute 4 seconds from the end
             // Treat as sentry if it's in SentryClips folder OR has sentry-related metadata
             const isSentryEvent = event.type === 'SentryClips' ||
                 event.metadata?.reason?.toLowerCase().includes('sentry');
 
-            if (isSentryEvent) {
+            if (aiSeekSec != null) {
+                // AI navigation wins — seek there and still mark the sentry
+                // trigger on the timeline if relevant (purely visual).
+                await this.videoPlayer.seekToEventTime(aiSeekSec);
+                if (isSentryEvent) {
+                    const triggerTime = Math.max(0, totalDuration - 60);
+                    this.timeline.setSentryTriggerMarker(triggerTime);
+                } else {
+                    this.timeline.setSentryTriggerMarker(0);
+                }
+            } else if (isSentryEvent) {
                 const startTime = Math.max(0, totalDuration - 64); // 1:04 from end
                 await this.videoPlayer.seekToEventTime(startTime);
 
@@ -2487,12 +2559,30 @@ class TeslaCamViewerApp {
                 this._updateStreetViewButton(null, null, 0);
             }
 
-            // Add camera info for Sentry events
+            // Add camera info for Sentry events.
+            //
+            // Labels come from the unified cameraIds table (js/cameraIds.js).
+            // The user-facing copy still falls back to "Camera N" for any ID
+            // we haven't verified against a real event — showing a guess
+            // ("Triggered by Cabin camera") would be worse than showing the
+            // raw ID, since a wrong guess is taken at face value.
             let reason = FolderParser.formatReason(event.metadata.reason);
             if (event.type === 'SentryClips' && event.metadata.camera) {
-                const cameraMap = { '0': 'Front', '5': 'Left', '6': 'Right' };
-                const cameraName = cameraMap[event.metadata.camera] || `Camera ${event.metadata.camera}`;
+                const camId = event.metadata.camera;
+                const verified = window.cameraIds?.isVerified(camId);
+                const cameraName = verified
+                    ? window.cameraIds.label(camId)
+                    : `Camera ${camId}`;
                 reason += ` • Triggered by ${cameraName} camera`;
+
+                // Diagnostic logging for ground-truth collection (task #44).
+                // Logs the available clip cameras alongside the trigger ID
+                // so unverified IDs can be cross-referenced (e.g. an event
+                // with rear clips triggered by ID 1 → evidence 1 = Rear).
+                if (!verified) {
+                    const cams = (event.clipGroups?.[0]?.clips && Object.keys(event.clipGroups[0].clips)) || [];
+                    console.log(`[CameraID] Unverified trigger ID "${camId}" on ${event.name} — available clip cameras: [${cams.join(', ')}]`);
+                }
             }
 
             this.eventLocationElement.innerHTML = location;
@@ -3476,6 +3566,10 @@ class TeslaCamViewerApp {
     async exportVideo(camera = 'all') {
         // Declare cancelHandler in outer scope so catch block can access it
         let cancelHandler = null;
+        // Tracks whether the user clicked Cancel — read after the await
+        // resolves so we can show "Export Cancelled" instead of the green
+        // success completion screen.
+        let userCancelled = false;
 
         // Auto-detect focused camera in Focus Mode
         if (camera === 'all' && this.layoutManager?.currentLayout === 'layout-focus') {
@@ -3619,10 +3713,13 @@ class TeslaCamViewerApp {
             cancelHandler = () => {
                 if (!cancelInProgress) {
                     cancelInProgress = true;
+                    userCancelled = true;
                     console.log('Cancel button clicked');
                     this.videoExport.cancelExport();
                     cancelBtn.removeEventListener('click', cancelHandler);
-                    this.hideLoading();
+                    // Don't hide loading here — let the post-await flow show
+                    // the "Export Cancelled" amber completion screen so the
+                    // user gets clear feedback that the cancel was honored.
                     this.enableControls();
                 }
             };
@@ -3728,8 +3825,9 @@ class TeslaCamViewerApp {
                 cancelBtn.removeEventListener('click', cancelHandler);
             }
 
-            // Show completion overlay
-            this.showExportComplete();
+            // Show completion overlay — amber/cancelled variant if the user
+            // clicked Cancel mid-export.
+            this.showExportComplete({ cancelled: userCancelled });
 
         } catch (error) {
             // Try to clean up cancel handler - cancelBtn may or may not exist depending on where error occurred
@@ -3745,7 +3843,37 @@ class TeslaCamViewerApp {
                 console.log('Export cancelled by user');
             } else {
                 console.error('Export failed:', error);
-                alert('Export was unable to complete: ' + error.message);
+                // Match common GPU-side failure patterns and offer a clearer
+                // recovery path. The raw error message from VideoEncoder /
+                // MediaRecorder / VideoDecoder is usually opaque ("Operation
+                // failed") so without this the user just sees a useless
+                // string. The diagnostics ring buffer captures the full
+                // context — Settings → Diagnostics → "Console Log Capture"
+                // is where to find it.
+                const msg = String(error?.message || '').toLowerCase();
+                const looksGpu = msg.includes('context lost')
+                    || msg.includes('device lost')
+                    || msg.includes('webgl')
+                    || msg.includes('webgpu')
+                    || (msg.includes('videoencoder') && msg.includes('error'))
+                    || msg.includes('operationerror')
+                    || error?.name === 'OperationError'
+                    || this.videoExport?._renderCanvasLost
+                    || this.videoExport?._playbackCanvasLost;
+
+                if (looksGpu) {
+                    console.error('[ExportGPU] Failure pattern suggests GPU context loss or hardware encoder error — see preceding [GPUContextLost]/[MediaRecorderError]/[VideoExportFast]/[FastFrameExtractor] log lines for codec + dimensions');
+                    alert(
+                        'Export failed — looks like your GPU was reset mid-export.\n\n'
+                        + 'This usually means the hardware encoder hung or Windows reset the graphics driver. '
+                        + 'Try one of: lower the export resolution (Settings), disable plate blur for this export, '
+                        + 'export a shorter time range using IN/OUT markers, or update your graphics driver.\n\n'
+                        + 'If it keeps happening, open Settings → Diagnostics → Console Log Capture and send us the log — '
+                        + 'we just added detailed encoder/decoder context to help support@teslacamviewer.com diagnose this.'
+                    );
+                } else {
+                    alert('Export was unable to complete: ' + error.message);
+                }
             }
         }
     }
@@ -4299,21 +4427,148 @@ class TeslaCamViewerApp {
     }
 
     /**
-     * Show export completion overlay
+     * Show export completion overlay.
+     * @param {{cancelled?: boolean}} [opts] cancelled=true uses amber styling
+     *   and "Export Cancelled" copy instead of the green success state.
      */
-    showExportComplete() {
+    /**
+     * Lightweight bottom-right toast — stacked, dismissible, auto-fades.
+     * Shared by the free-tier warning + any other ad-hoc notification path
+     * that doesn't need a dedicated overlay.
+     *
+     * @param {string} message
+     * @param {'info'|'warn'|'error'} [kind='info']
+     * @param {number} [durationMs=5000]
+     */
+    showToast(message, kind = 'info', durationMs = 5000) {
+        let stack = document.getElementById('appToastStack');
+        if (!stack) {
+            stack = document.createElement('div');
+            stack.id = 'appToastStack';
+            stack.style.cssText = `
+                position: fixed; bottom: 20px; right: 20px;
+                display: flex; flex-direction: column; gap: 8px;
+                z-index: 10001; pointer-events: none;`;
+            document.body.appendChild(stack);
+        }
+        const accent = kind === 'error' ? '#ff3b3b' : kind === 'warn' ? '#ffb800' : 'var(--accent, #00d4ff)';
+        const toast = document.createElement('div');
+        toast.style.cssText = `
+            background: var(--bg-elevated, #1c2230);
+            border: 1px solid ${accent};
+            color: var(--text-primary, #e8eaed);
+            padding: 10px 14px;
+            border-radius: 6px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+            font-size: 0.9rem;
+            max-width: 360px;
+            pointer-events: auto;
+            cursor: pointer;
+            opacity: 0;
+            transform: translateX(20px);
+            transition: opacity 0.2s, transform 0.2s;`;
+        toast.textContent = message;
+        toast.addEventListener('click', () => { toast.remove(); });
+        stack.appendChild(toast);
+        // Animate in
+        requestAnimationFrame(() => {
+            toast.style.opacity = '1';
+            toast.style.transform = 'translateX(0)';
+        });
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(20px)';
+            setTimeout(() => toast.remove(), 250);
+        }, durationMs);
+    }
+
+    /**
+     * Toast a soft warning at the 5th and 8th free-tier event views so the
+     * user has visibility into the daily runway BEFORE we pop the limit
+     * modal at #11. Each warning fires once per day. The thresholds match
+     * "halfway there" and "two left" cues — friendlier than going from
+     * silent to blocked.
+     *
+     * @param {Object} access — checkAccess result; uses access.remaining
+     */
+    _maybeShowFreeTierWarning(access) {
+        if (!access || access.allowed === false) return;
+        if (access.remaining == null || access.limit == null) return;
+        // Compute viewed-so-far. checkAccess returns "remaining" BEFORE
+        // recordEventView fires for this event, so the 5th view we want
+        // to warn about lands at remaining = limit - 4 (next click bumps
+        // to remaining = limit - 5, i.e. 5 viewed).
+        const viewedAfter = access.limit - access.remaining + 1;
+        if (viewedAfter !== 5 && viewedAfter !== 8) return;
+
+        // Per-day dedupe — one toast per threshold per day.
+        const today = new Date().toISOString().slice(0, 10);
+        const dedupeKey = `tcv_freetier_warn_${today}_${viewedAfter}`;
+        if (localStorage.getItem(dedupeKey)) return;
+        localStorage.setItem(dedupeKey, '1');
+
+        const left = access.limit - viewedAfter;
+        const message = viewedAfter === 5
+            ? `${viewedAfter} of ${access.limit} free events viewed today. ${left} remaining.`
+            : `${left} free event${left === 1 ? '' : 's'} left today. Already-viewed events stay accessible after limit.`;
+        if (typeof this.showToast === 'function') {
+            this.showToast(message, 'info', 8000);
+        } else {
+            console.log('[FreeTier]', message);
+        }
+    }
+
+    /**
+     * Mirror of _maybeShowFreeTierWarning for the export cap. Only 2 free
+     * exports per day, so the only meaningful threshold is "1 of 2 used"
+     * — toasted on the first export to give the user fair warning before
+     * they hit the wall. The modal handles the hard-stop case at 2.
+     *
+     * @param {Object} access — checkAccess result from sessionManager
+     */
+    _maybeShowExportWarning(access) {
+        if (!access || access.allowed === false) return;
+        if (access.remaining == null || access.limit == null) return;
+        const usedAfter = access.limit - access.remaining + 1;
+        if (usedAfter !== 1) return;
+
+        const today = new Date().toISOString().slice(0, 10);
+        const dedupeKey = `tcv_export_warn_${today}_${usedAfter}`;
+        if (localStorage.getItem(dedupeKey)) return;
+        localStorage.setItem(dedupeKey, '1');
+
+        const left = access.limit - usedAfter;
+        const message = `${usedAfter} of ${access.limit} free exports used today. ${left} remaining. Re-exporting the same event stays free.`;
+        if (typeof this.showToast === 'function') {
+            this.showToast(message, 'info', 8000);
+        } else {
+            console.log('[FreeTier:Export]', message);
+        }
+    }
+
+    showExportComplete(opts = {}) {
+        const cancelled = opts.cancelled === true;
+        const title = cancelled ? 'Export Cancelled' : 'Export Complete';
+        const subtitle = cancelled
+            ? 'The export was stopped before it finished. No file was saved.'
+            : 'Your video has been saved successfully.';
+        const titleColor = cancelled ? '#ffb800' : '#4caf50';
+        const barGradient = cancelled
+            ? 'linear-gradient(90deg, #ffb800, #ff8800)'
+            : 'linear-gradient(90deg, #4caf50, #66bb6a)';
+
         this.loadingOverlay.style.display = 'flex';
         this.loadingOverlay.classList.remove('hidden');
         this.loadingText.innerHTML = `
             <div style="text-align: center;">
-                <div style="font-size: 1.5rem; font-weight: bold; margin-bottom: 1rem; color: #4caf50;">
-                    Export Complete
+                <div style="font-size: 1.5rem; font-weight: bold; margin-bottom: 1rem; color: ${titleColor};">
+                    ${title}
                 </div>
                 <div style="font-size: 1rem; color: #e0e0e0; margin-bottom: 2rem;">
-                    Your video has been saved successfully.
+                    ${subtitle}
                 </div>
                 <div style="width: 300px; height: 8px; background: #3a3a3a; border-radius: 4px; margin: 1rem auto 2rem; overflow: hidden;">
-                    <div style="width: 100%; height: 100%; background: linear-gradient(90deg, #4caf50, #66bb6a);"></div>
+                    <div style="width: 100%; height: 100%; background: ${barGradient};"></div>
                 </div>
                 <button id="exportCompleteBtn" style="
                     background: #4a9eff;
@@ -4429,6 +4684,10 @@ class TeslaCamViewerApp {
                             this._scheduleElevationLoad(event);
                             // Load telemetry graphs data (debounced)
                             this._scheduleGraphsLoad(event);
+                            // Compute intervention severity (debounced) once more
+                            // SEI data is available; uses whatever clips have
+                            // loaded so far and updates when more arrive.
+                            this._scheduleSeverityCompute(event);
                             // Fetch weather from telemetry if not already available from metadata
                             // (useful for RecentClips which don't have event.json)
                             if (!event.metadata?.est_lat && !this._weatherFetchedFromTelemetry) {
@@ -4452,6 +4711,219 @@ class TeslaCamViewerApp {
     /**
      * Schedule elevation data loading (debounced to wait for multiple clips to load)
      */
+    /**
+     * Compute the intervention severity score from currently-loaded SEI data.
+     * Debounced since loadClipData resolves once per clip and we'd otherwise
+     * recompute on every clip's arrival. Caches on the event object and
+     * refreshes the sidebar badge.
+     */
+    _scheduleSeverityCompute(event) {
+        if (!this.telemetryOverlay) return;
+        // If ALL three metrics already hydrated from cache, skip recompute.
+        // Otherwise we still want a live pass — it refreshes anything that
+        // was missing or stale and gets the user's just-loaded event badged
+        // even if the background scanner hasn't reached it yet.
+        const fullyHydrated = event._severityFromCache
+            && event._recordingHealthFromCache
+            && event._launchesFromCache;
+        if (fullyHydrated) return;
+
+        if (this._severityTimeout) clearTimeout(this._severityTimeout);
+        this._severityTimeout = setTimeout(() => {
+            this._severityTimeout = null;
+            if (this.currentEvent?.name !== event.name) return;  // user moved on
+            try {
+                // Pass cached clip durations so event timestamps are accurate
+                // (clips vary 55-63s — assuming 60s puts peaks up to a minute off)
+                const clipDurations = this.videoPlayer?.cachedClipDurations || null;
+                const seiMap = this.telemetryOverlay.clipSeiData;
+
+                const severity = window.interventionSeverity
+                    ? window.interventionSeverity.computeFromSei(seiMap, clipDurations)
+                    : null;
+                const recordingHealth = window.seiInsights
+                    ? window.seiInsights.computeRecordingHealthFromSei(seiMap)
+                    : null;
+                const launches = window.seiInsights
+                    ? window.seiInsights.computeLaunches(seiMap, clipDurations)
+                    : null;
+
+                let refresh = false;
+                if (severity) {
+                    event._severityScore = severity;
+                    event._severityFromCache = false;
+                    refresh = true;
+                }
+                if (recordingHealth) {
+                    event._recordingHealth = recordingHealth;
+                    event._recordingHealthFromCache = false;
+                    refresh = true;
+                }
+                if (launches) {
+                    event._launches = launches;
+                    event._launchesFromCache = false;
+                    refresh = true;
+                    this._applyLaunchBookmarks(event, launches);
+                }
+                if (refresh && this.eventBrowser?.refreshEventBadges) {
+                    this.eventBrowser.refreshEventBadges(event.name);
+                }
+                // Persist whatever we computed so next open is instant.
+                if (window.eventInsightsCache && (severity || recordingHealth || launches)) {
+                    const eventKey = event.compoundKey || event.name;
+                    const partial = {
+                        eventTimestamp: event.timestamp ? new Date(event.timestamp).getTime() : null
+                    };
+                    if (severity)        partial.severity        = severity;
+                    if (recordingHealth) partial.recordingHealth = recordingHealth;
+                    if (launches)        partial.launches        = launches;
+                    window.eventInsightsCache.putPartial(eventKey, partial);
+                }
+            } catch (err) {
+                console.warn('[InsightsCompute] live compute failed:', err);
+            }
+        }, 600);
+    }
+
+    /**
+     * Hydrate an event from the IDB insights cache — sets
+     * event._severityScore + refreshes the sidebar badge if found.
+     * Runs synchronously-fast from IDB; callers don't need to await.
+     * Near-miss hydration happens from the timeline side via
+     * _hydrateNearMissesFromCache() so the marker paints before SEI is loaded.
+     */
+    async _hydrateInsightsFromCache(event) {
+        if (!window.eventInsightsCache || !event) return;
+        const eventKey = event.compoundKey || event.name;
+        try {
+            const [cachedSeverity, cachedHealth, cachedLaunches] = await Promise.all([
+                window.eventInsightsCache.getSeverity(eventKey),
+                window.eventInsightsCache.getRecordingHealth(eventKey),
+                window.eventInsightsCache.getLaunches(eventKey)
+            ]);
+            // Apply only if user is still on this event (they may have moved on).
+            if (this.currentEvent?.name !== event.name) return;
+            let touched = false;
+            if (cachedSeverity) {
+                event._severityScore = cachedSeverity;
+                event._severityFromCache = true;
+                touched = true;
+            }
+            if (cachedHealth) {
+                event._recordingHealth = cachedHealth;
+                event._recordingHealthFromCache = true;
+                touched = true;
+            }
+            if (cachedLaunches) {
+                event._launches = cachedLaunches;
+                event._launchesFromCache = true;
+                touched = true;
+                this._applyLaunchBookmarks(event, cachedLaunches);
+            }
+            if (touched && this.eventBrowser?.refreshEventBadges) {
+                this.eventBrowser.refreshEventBadges(event.name);
+            }
+        } catch (e) {
+            // Non-fatal — recompute path takes over.
+        }
+    }
+
+    /**
+     * Push each cached launch onto the timeline as a labeled bookmark.
+     * Idempotent — clears any previous launch-bookmarks first so a re-load
+     * doesn't accumulate duplicates. Skips silently if the timeline isn't
+     * ready yet or the launch list is empty.
+     */
+    _applyLaunchBookmarks(event, launches) {
+        if (!this.timeline || !Array.isArray(launches) || launches.length === 0) return;
+        if (!Array.isArray(this.timeline.bookmarks)) return;
+        try {
+            // Launch bookmarks are derived (re-computed from cache every
+            // load), so they must NOT go through addBookmarkAt — that
+            // would persist them to localStorage and conflate them with
+            // user-saved bookmarks. We push directly and re-render once.
+            this.timeline.bookmarks = this.timeline.bookmarks.filter(b => !b.isLaunch);
+            for (let i = 0; i < launches.length; i++) {
+                const launch = launches[i];
+                if (!Number.isFinite(launch?.absoluteTimeSec)) continue;
+                this.timeline.bookmarks.push({
+                    id: `launch-${i}-${Math.round(launch.absoluteTimeSec * 1000)}`,
+                    time: launch.absoluteTimeSec,
+                    label: '🏁 Launch',
+                    isLaunch: true
+                });
+            }
+            this.timeline.bookmarks.sort((a, b) => a.time - b.time);
+            if (typeof this.timeline.renderBookmarks === 'function') {
+                this.timeline.renderBookmarks();
+            }
+        } catch (e) {
+            console.warn('[Launches] Failed to apply launch bookmarks:', e);
+        }
+    }
+
+    /**
+     * Bulk-hydrate severity scores for every event currently in the
+     * sidebar. One IDB getAll() → Map lookup per event → refresh only
+     * the cards that hit. Runs async after render so it doesn't hold
+     * up the initial paint.
+     * @param {Array} events  filtered event list that was just loaded
+     */
+    async _bulkHydrateSeverityBadges(events) {
+        if (!window.eventInsightsCache || !events || events.length === 0) return;
+        try {
+            const cacheMap = await window.eventInsightsCache.getAllCurrentAsMap();
+            if (cacheMap.size === 0) return;
+            const sevVer = window.eventInsightsCache.SEVERITY_SCHEMA_VERSION;
+            const healthVer = window.eventInsightsCache.RECORDING_HEALTH_SCHEMA_VERSION;
+            const launchesVer = window.eventInsightsCache.LAUNCHES_SCHEMA_VERSION;
+            let sevHits = 0, healthHits = 0, launchHits = 0;
+            for (const event of events) {
+                const key = event.compoundKey || event.name;
+                const rec = cacheMap.get(key);
+                if (!rec) continue;
+                let refresh = false;
+                if (rec.severity && rec.severityVersion === sevVer) {
+                    event._severityScore = rec.severity;
+                    event._severityFromCache = true;
+                    sevHits++; refresh = true;
+                }
+                if (rec.recordingHealth && rec.recordingHealthVersion === healthVer) {
+                    event._recordingHealth = rec.recordingHealth;
+                    event._recordingHealthFromCache = true;
+                    healthHits++; refresh = true;
+                }
+                if (rec.launches && rec.launchesVersion === launchesVer) {
+                    event._launches = rec.launches;
+                    event._launchesFromCache = true;
+                    launchHits++; refresh = true;
+                }
+                if (refresh) this.eventBrowser?.refreshEventBadges?.(event.name);
+            }
+            if (sevHits + healthHits + launchHits > 0) {
+                console.log(`[InsightsCache] Hydrated from cache — severity:${sevHits} health:${healthHits} launches:${launchHits}`);
+            }
+        } catch (e) {
+            console.warn('[InsightsCache] bulk hydrate failed:', e);
+        }
+    }
+
+    /**
+     * Pull cached near-misses from IDB and paint them on the timeline
+     * immediately. The live detector will overwrite with fresh data once
+     * SEI is parsed; this just gives the user instant visual feedback.
+     */
+    async _hydrateNearMissesFromCache(event) {
+        if (!window.eventInsightsCache || !this.timeline || !event) return;
+        const eventKey = event.compoundKey || event.name;
+        try {
+            const cached = await window.eventInsightsCache.getNearMisses(eventKey);
+            if (cached && this.currentEvent?.name === event.name) {
+                this.timeline.setNearMissMarkers(cached);
+            }
+        } catch (e) { /* non-fatal */ }
+    }
+
     _scheduleElevationLoad(event) {
         // Clear any pending load
         if (this._elevationLoadTimeout) {
@@ -4573,8 +5045,18 @@ class TeslaCamViewerApp {
                 if (existingCallback) {
                     existingCallback(nearMisses);
                 }
-                // Cache near-miss data for event browser display
+                // Cache near-miss data for event browser display (localStorage summary list)
                 this._cacheNearMissData(nearMisses);
+                // Persist full near-miss array to IDB so next open paints
+                // markers instantly without re-parsing SEI.
+                if (window.eventInsightsCache && this.currentEvent) {
+                    const eventKey = this.currentEvent.compoundKey || this.currentEvent.name;
+                    const ts = this.currentEvent.timestamp ? new Date(this.currentEvent.timestamp).getTime() : null;
+                    window.eventInsightsCache.putPartial(eventKey, {
+                        nearMisses: nearMisses || [],
+                        eventTimestamp: ts
+                    });
+                }
             };
 
             // Set up incident detection callback to feed MapView
