@@ -2759,49 +2759,10 @@ class PlateEnhancer {
      * @param {boolean} canReprocess - Whether re-processing is available
      */
     async showResults(enhanced, canReprocess = false) {
-        // Check if user is Pro - free users get watermarked images
-        // Per spec NMC-4702
-        const isPro = await this.isProUser();
+        // UNLOCKED: always use original clean images (no watermarks)
 
-        // For free users, watermark all displayed images to prevent right-click save
-        if (!isPro) {
-            console.log('[PlateEnhancer] Free user - applying watermarks to displayed images');
-
-            // Watermark combined result
-            if (enhanced.combined?.dataUrl) {
-                enhanced.combined.displayUrl = await this.addWatermark(enhanced.combined.dataUrl);
-            }
-
-            // Watermark method results (including upscaled versions)
-            if (enhanced.methods) {
-                for (const key of Object.keys(enhanced.methods)) {
-                    if (enhanced.methods[key]?.dataUrl) {
-                        enhanced.methods[key].displayUrl = await this.addWatermark(enhanced.methods[key].dataUrl);
-                    }
-                    // Also watermark upscaled version if available
-                    if (enhanced.methods[key]?.upscaledDataUrl) {
-                        enhanced.methods[key].upscaledDisplayUrl = await this.addWatermark(enhanced.methods[key].upscaledDataUrl);
-                    }
-                }
-            }
-
-            // Watermark upscaled
-            if (enhanced.upscaled?.dataUrl) {
-                enhanced.upscaled.displayUrl = await this.addWatermark(enhanced.upscaled.dataUrl);
-            }
-
-            // Watermark top frames
-            if (enhanced.topFrames) {
-                for (const frame of enhanced.topFrames) {
-                    if (frame.dataUrl) {
-                        frame.displayUrl = await this.addWatermark(frame.dataUrl);
-                    }
-                }
-            }
-        }
-
-        // Helper to get display URL (watermarked for free, original for pro)
-        const getDisplayUrl = (item) => item.displayUrl || item.dataUrl;
+        // Helper to get display URL (always original)
+        const getDisplayUrl = (item) => item.dataUrl;
 
         const backdrop = document.createElement('div');
         backdrop.className = 'plate-enhancer-dialog-backdrop';
@@ -2985,12 +2946,12 @@ class PlateEnhancer {
                 const method = enhanced.methods[methodKey];
                 if (!method) return;
 
-                const displayUrl = method.displayUrl || method.dataUrl;
+                const displayUrl = method.dataUrl;
                 const hasUpscaled = !!method.upscaledDataUrl;
                 const methodThumb = document.createElement('div');
                 methodThumb.className = 'plate-enhancer-method-thumb' + (methodKey === 'luckyRegions' ? ' lucky-method' : '') + (methodKey === 'ensemble' ? ' selected' : '') + (hasUpscaled ? ' has-upscaled' : '');
-                methodThumb.dataset.src = method.dataUrl; // Keep original for downloads
-                methodThumb.dataset.displaySrc = displayUrl; // Watermarked for display
+                methodThumb.dataset.src = method.dataUrl; // original for downloads
+                methodThumb.dataset.displaySrc = displayUrl;
                 methodThumb.dataset.methodKey = methodKey;
                 methodThumb.dataset.label = method.name || methodNames[methodKey];
                 methodThumb.dataset.showingUpscaled = 'false';
@@ -3019,8 +2980,7 @@ class PlateEnhancer {
                         const img = methodThumb.querySelector('img');
                         const nameDiv = methodThumb.querySelector('.plate-enhancer-method-name');
 
-                        // Use watermarked version for display (upscaledDisplayUrl), original for downloads (upscaledDataUrl)
-                        const upscaledDisplay = method.upscaledDisplayUrl || method.upscaledDataUrl;
+                        const upscaledDisplay = method.upscaledDataUrl;
 
                         if (isShowingUpscaled) {
                             // Switch to original
@@ -3034,7 +2994,7 @@ class PlateEnhancer {
                                 mainLabel.textContent = `${method.name} (Sharpness: ${method.sharpness.toFixed(1)})`;
                             }
                         } else {
-                            // Switch to upscaled (watermarked for display)
+                            // Switch to upscaled
                             img.src = upscaledDisplay;
                             nameDiv.textContent = methodNames[methodKey] + ' 4x';
                             badge.classList.add('active');
@@ -3053,9 +3013,8 @@ class PlateEnhancer {
                     // Don't trigger if clicking on badge
                     if (e.target.classList.contains('plate-enhancer-upscale-badge')) return;
 
-                    // Determine which version to show (use watermarked for display)
                     const isShowingUpscaled = methodThumb.dataset.showingUpscaled === 'true';
-                    const upscaledDisplay = method.upscaledDisplayUrl || method.upscaledDataUrl;
+                    const upscaledDisplay = method.upscaledDataUrl;
                     const srcToShow = isShowingUpscaled ? upscaledDisplay : displayUrl;
                     const sharpnessToShow = isShowingUpscaled ? method.upscaledSharpness : method.sharpness;
                     const labelSuffix = isShowingUpscaled ? ' 4x' : '';
@@ -3231,7 +3190,6 @@ class PlateEnhancer {
                 thumb.classList.add('selected');
                 // Also clear method thumb selection for consistency
                 modal.querySelectorAll('.plate-enhancer-method-thumb').forEach(t => t.classList.remove('selected'));
-                // Use displaySrc (watermarked) for preview, keep src for downloads
                 mainImg.src = thumb.dataset.displaySrc || thumb.dataset.src;
                 mainLabel.textContent = thumb.dataset.label;
             }
@@ -3561,24 +3519,17 @@ class PlateEnhancer {
     }
 
     /**
-     * Block right-click on images for free users, allow for Pro users
+     * Block right-click on images (no-op in unlocked mode)
      * @param {HTMLElement} container - Container with images to protect
      */
     async setupImageRightClickProtection(container) {
-        const isPro = await this.isProUser();
-        if (isPro) return; // Pro users can right-click freely
-
-        // Block right-click on all images in the container
-        container.addEventListener('contextmenu', (e) => {
-            if (e.target.tagName === 'IMG') {
-                e.preventDefault();
-            }
-        });
+        // Unlocked: allow right-click on images
+        return;
     }
 
     /**
      * Create thumbnail element
-     * @param {Object} frame - Frame data with dataUrl and optional displayUrl (watermarked)
+     * @param {Object} frame - Frame data with dataUrl
      * @param {string} rank - Rank label
      * @param {string} cameraLabel - Camera identifier
      * @param {boolean} isCombined - Whether this is a combined/processed result
@@ -3589,7 +3540,7 @@ class PlateEnhancer {
         thumb.className = 'plate-enhancer-thumbnail';
         if (showCheckbox) thumb.classList.add('selectable');
         thumb.dataset.src = frame.dataUrl; // Original for downloads
-        thumb.dataset.displaySrc = frame.displayUrl || frame.dataUrl; // Watermarked for display
+        thumb.dataset.displaySrc = frame.dataUrl;
         thumb.dataset.label = isCombined ? 'Combined Result' : `${rank} - ${this.getCameraDisplayName(cameraLabel)}`;
 
         // Add checkbox for frame selection
@@ -3602,7 +3553,7 @@ class PlateEnhancer {
         }
 
         const img = document.createElement('img');
-        img.src = frame.displayUrl || frame.dataUrl; // Show watermarked version
+        img.src = frame.dataUrl;
         thumb.appendChild(img);
 
         const info = document.createElement('div');
@@ -4004,80 +3955,20 @@ class PlateEnhancer {
     }
 
     /**
-     * Check if user has Pro access (no watermark needed)
+     * Check if user has Pro access.
+     * UNLOCKED FOR PERSONAL USE: always true.
      * @returns {Promise<boolean>}
      */
     async isProUser() {
-        try {
-            const access = await window.app?.sessionManager?.checkAccess?.('plateEnhancement');
-            return access?.allowed === true;
-        } catch (e) {
-            return false;
-        }
+        return true;
     }
 
     /**
-     * Add watermark to image for free users
-     * @param {string} dataUrl - Source image data URL
-     * @returns {Promise<string>} - Watermarked image data URL
-     */
-    async addWatermark(dataUrl) {
-        return new Promise((resolve) => {
-            const img = new Image();
-            img.onload = () => {
-                const canvas = document.createElement('canvas');
-                canvas.width = img.width;
-                canvas.height = img.height;
-                const ctx = canvas.getContext('2d');
-
-                // Draw original image
-                ctx.drawImage(img, 0, 0);
-
-                // Calculate diagonal angle from corner to corner
-                const diagonalAngle = Math.atan2(img.height, img.width);
-                const diagonalLength = Math.sqrt(img.width * img.width + img.height * img.height);
-
-                // Font size based on diagonal length for good coverage
-                const fontSize = Math.max(16, Math.min(48, diagonalLength / 12));
-                ctx.font = `bold ${fontSize}px Arial, sans-serif`;
-
-                const text = 'TeslaCamViewer.com';
-                const textMetrics = ctx.measureText(text);
-
-                // Save context, move to center, rotate
-                ctx.save();
-                ctx.translate(img.width / 2, img.height / 2);
-                ctx.rotate(diagonalAngle);
-
-                // Draw text centered on diagonal with outline for visibility
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
-                ctx.strokeStyle = 'rgba(0, 0, 0, 0.3)';
-                ctx.lineWidth = 3;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-
-                ctx.strokeText(text, 0, 0);
-                ctx.fillText(text, 0, 0);
-
-                ctx.restore();
-
-                resolve(canvas.toDataURL('image/png'));
-            };
-            img.onerror = () => resolve(dataUrl); // Fallback to original on error
-            img.src = dataUrl;
-        });
-    }
-
-    /**
-     * Download single image (with watermark for free users)
+     * Download single image (unlocked - always clean)
      */
     async downloadImage(dataUrl, filename) {
-        // Check if Pro user - Pro users get clean images
-        const isPro = await this.isProUser();
-        const finalDataUrl = isPro ? dataUrl : await this.addWatermark(dataUrl);
-
         const link = document.createElement('a');
-        link.href = finalDataUrl;
+        link.href = dataUrl;
         link.download = filename;
         document.body.appendChild(link);
         link.click();
@@ -4085,16 +3976,12 @@ class PlateEnhancer {
     }
 
     /**
-     * Copy image to clipboard (with watermark for free users)
+     * Copy image to clipboard (unlocked - always clean)
      */
     async copyToClipboard(dataUrl) {
         try {
-            // Check if Pro user - Pro users get clean images
-            const isPro = await this.isProUser();
-            const finalDataUrl = isPro ? dataUrl : await this.addWatermark(dataUrl);
-
             // Convert data URL to blob
-            const response = await fetch(finalDataUrl);
+            const response = await fetch(dataUrl);
             const blob = await response.blob();
 
             // Use clipboard API
@@ -4132,7 +4019,7 @@ class PlateEnhancer {
     }
 
     /**
-     * Download all results as ZIP (with watermarks for free users)
+     * Download all results as ZIP (unlocked - clean images)
      */
     async downloadAllAsZip(enhanced) {
         if (typeof JSZip === 'undefined') {
@@ -4140,28 +4027,19 @@ class PlateEnhancer {
             return;
         }
 
-        // Check if Pro user - Pro users get clean images
-        const isPro = await this.isProUser();
-
         const zip = new JSZip();
         const folder = zip.folder('enhanced-plates');
 
-        // Helper to get data for zip (with optional watermark)
-        const getImageData = async (dataUrl) => {
-            if (isPro) {
-                return dataUrl.split(',')[1];
-            }
-            const watermarked = await this.addWatermark(dataUrl);
-            return watermarked.split(',')[1];
-        };
+        // Helper to get data for zip (always clean)
+        const getImageData = (dataUrl) => dataUrl.split(',')[1];
 
         // Add combined result
-        const combinedData = await getImageData(enhanced.combined.dataUrl);
+        const combinedData = getImageData(enhanced.combined.dataUrl);
         folder.file('00-combined.png', combinedData, { base64: true });
 
         // Add upscaled version if available
         if (enhanced.upscaled) {
-            const upscaledData = await getImageData(enhanced.upscaled.dataUrl);
+            const upscaledData = getImageData(enhanced.upscaled.dataUrl);
             const scale = enhanced.upscaled.scale || 2;
             folder.file(`00-combined-${scale}x-upscaled.png`, upscaledData, { base64: true });
         }
@@ -4174,12 +4052,12 @@ class PlateEnhancer {
                 const method = enhanced.methods[key];
                 if (method?.dataUrl) {
                     // Add original version
-                    const data = await getImageData(method.dataUrl);
+                    const data = getImageData(method.dataUrl);
                     folder.file(`01-method-${String(idx + 1).padStart(2, '0')}-${key}.png`, data, { base64: true });
 
                     // Add 4x upscaled version if available
                     if (method.upscaledDataUrl) {
-                        const upscaledData = await getImageData(method.upscaledDataUrl);
+                        const upscaledData = getImageData(method.upscaledDataUrl);
                         folder.file(`01-method-${String(idx + 1).padStart(2, '0')}-${key}-4x.png`, upscaledData, { base64: true });
                     }
                 }
@@ -4189,7 +4067,7 @@ class PlateEnhancer {
         // Add top frames
         for (let idx = 0; idx < enhanced.topFrames.length; idx++) {
             const frame = enhanced.topFrames[idx];
-            const data = await getImageData(frame.dataUrl);
+            const data = getImageData(frame.dataUrl);
             const camera = frame.cameraId.replace('_', '-');
             folder.file(`02-source-${String(idx + 1).padStart(2, '0')}-${camera}.png`, data, { base64: true });
         }
@@ -4338,19 +4216,7 @@ class PlateEnhancer {
      * @returns {boolean} - Whether access is allowed
      */
     async checkProAccess(feature) {
-        // Check if session manager exists and has checkAccess
-        if (!window.app?.sessionManager?.checkAccess) {
-            // No session manager - this is free mode, block Pro features
-            console.log(`[PlateEnhancer] Pro feature "${feature}" blocked - no session manager`);
-            this.showToast('This feature requires TeslaCamViewer Pro');
-            return false;
-        }
-
-        const access = await window.app.sessionManager.checkAccess('plateEnhancement');
-        if (!access.allowed) {
-            window.app.sessionManager.showLimitModal('premium');
-            return false;
-        }
+        // UNLOCKED FOR PERSONAL USE: plate enhancement always available
         return true;
     }
 

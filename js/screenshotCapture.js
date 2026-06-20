@@ -158,10 +158,11 @@ class ScreenshotCapture {
             this.addTimestampOverlay(ctx, canvas.width, canvas.height);
         }
 
-        // Add telemetry overlay if enabled (skipped in privacy mode)
+        // Add telemetry overlay if enabled (core HUD is never stripped by Privacy Mode;
+        // Privacy only removes sensitive data like GPS/timestamps/mini-map).
         const telemetryEnabled = !settings || settings.get('telemetryOverlayInExport') !== false;
 
-        if (!privacyMode && window.app?.telemetryOverlay && telemetryEnabled && window.app.telemetryOverlay.hasTelemetryData()) {
+        if (window.app?.telemetryOverlay && telemetryEnabled && window.app.telemetryOverlay.hasTelemetryData()) {
             const clipIndex = this.videoPlayer.currentClipIndex || 0;
             const timeInClip = this.videoPlayer.getCurrentTime() || 0;
             const videoDuration = this.videoPlayer.getCurrentDuration() || 60;
@@ -228,9 +229,6 @@ class ScreenshotCapture {
                 console.error('[Screenshot] Mini-Map render error:', e);
             }
         }
-
-        // Add watermarks for free tier users
-        await this.addWatermarksIfNeeded(ctx, layoutConfig, videoWidth, videoHeight);
 
         // Convert canvas to blob
         const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
@@ -336,9 +334,6 @@ class ScreenshotCapture {
         if (includeTimestamp && !privacyMode) {
             this.addTimestampOverlay(ctx, canvas.width, canvas.height);
         }
-
-        // Add watermark for free tier users
-        await this.addSingleCameraWatermark(ctx, canvas.width, canvas.height);
 
         // Convert and download
         const mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
@@ -502,91 +497,5 @@ class ScreenshotCapture {
 
         // Clean up blob URL after a delay
         setTimeout(() => URL.revokeObjectURL(url), 100);
-    }
-
-    /**
-     * Check if watermarks should be added and add them to composite image
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {Object} layoutConfig - Layout configuration
-     * @param {number} videoWidth - Fallback video width
-     * @param {number} videoHeight - Fallback video height
-     */
-    async addWatermarksIfNeeded(ctx, layoutConfig, videoWidth, videoHeight) {
-        const sessionManager = window.app?.sessionManager;
-        if (!sessionManager) return;
-
-        const shouldWatermark = await sessionManager.shouldWatermark();
-        if (!shouldWatermark) return;
-
-        const watermarkText = 'TeslaCamViewer.com - Unlicensed';
-
-        if (layoutConfig && layoutConfig.cameras) {
-            // Add watermark to each camera in layout
-            for (const [cameraName, camConfig] of Object.entries(layoutConfig.cameras)) {
-                if (!camConfig.visible || camConfig.w <= 0 || camConfig.h <= 0) continue;
-                this.drawWatermarkOnRegion(ctx, camConfig.x, camConfig.y, camConfig.w, camConfig.h, watermarkText);
-            }
-        } else {
-            // Fallback: Add watermarks to 2x2 grid
-            this.drawWatermarkOnRegion(ctx, 0, 0, videoWidth, videoHeight, watermarkText);
-            this.drawWatermarkOnRegion(ctx, videoWidth, 0, videoWidth, videoHeight, watermarkText);
-            this.drawWatermarkOnRegion(ctx, 0, videoHeight, videoWidth, videoHeight, watermarkText);
-            this.drawWatermarkOnRegion(ctx, videoWidth, videoHeight, videoWidth, videoHeight, watermarkText);
-        }
-    }
-
-    /**
-     * Add watermark to a single camera capture
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {number} width
-     * @param {number} height
-     */
-    async addSingleCameraWatermark(ctx, width, height) {
-        const sessionManager = window.app?.sessionManager;
-        if (!sessionManager) return;
-
-        const shouldWatermark = await sessionManager.shouldWatermark();
-        if (!shouldWatermark) return;
-
-        const watermarkText = 'TeslaCamViewer.com - Unlicensed';
-        this.drawWatermarkOnRegion(ctx, 0, 0, width, height, watermarkText);
-    }
-
-    /**
-     * Draw diagonal watermark on a region
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {number} x - Region x
-     * @param {number} y - Region y
-     * @param {number} w - Region width
-     * @param {number} h - Region height
-     * @param {string} text - Watermark text
-     */
-    drawWatermarkOnRegion(ctx, x, y, w, h, text) {
-        ctx.save();
-
-        // Move to center of region
-        const centerX = x + w / 2;
-        const centerY = y + h / 2;
-
-        ctx.translate(centerX, centerY);
-        ctx.rotate(-Math.PI / 6); // -30 degrees
-
-        // Calculate font size based on region size
-        const fontSize = Math.max(16, Math.min(w, h) / 12);
-        ctx.font = `bold ${fontSize}px Arial`;
-
-        // Measure text
-        const textMetrics = ctx.measureText(text);
-        const textWidth = textMetrics.width;
-
-        // Draw text shadow for better visibility
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.fillText(text, -textWidth / 2 + 2, 2);
-
-        // Draw semi-transparent white text
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-        ctx.fillText(text, -textWidth / 2, 0);
-
-        ctx.restore();
     }
 }

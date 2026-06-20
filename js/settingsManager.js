@@ -85,8 +85,8 @@ class SettingsManager {
             // License Plate Blurring - uses AI to detect and blur license plates
             blurLicensePlates: false,  // Off by default since it slows export significantly
 
-            // Branding in exports - only applies to licensed users
-            showBrandingInExport: true  // Show TeslaCamViewer.com branding by default
+            // Branding in exports (user can toggle; default off for clean unlocked exports)
+            showBrandingInExport: false
         };
 
         this.settings = this.loadSettings();
@@ -498,7 +498,7 @@ class SettingsManager {
                         </div>
                         <div class="setting-row" id="setting-row-showBrandingInExport" style="display: none;">
                             <label for="setting-showBrandingInExport">${this.t('settings.export.branding')}</label>
-                            <input type="checkbox" id="setting-showBrandingInExport" class="setting-checkbox" checked>
+                            <input type="checkbox" id="setting-showBrandingInExport" class="setting-checkbox">
                             <span class="setting-hint">${this.t('settings.export.brandingHint')}</span>
                         </div>
                     </div>
@@ -1160,9 +1160,7 @@ class SettingsManager {
             mapProviderElement.value = window.app.mapView.getCurrentProvider();
         }
 
-        // Show branding toggle only for Pro users. hasValidLicense() doesn't
-        // exist on sessionManager — use the canonical shouldWatermark() check
-        // (async, returns false when a valid Pro session is active).
+        // Branding toggle is now always shown (unlocked mode); shouldWatermark is always false.
         const brandingRow = this.modal.querySelector('#setting-row-showBrandingInExport');
         if (brandingRow) {
             const sessionManager = window.app?.sessionManager;
@@ -1288,9 +1286,7 @@ class SessionManager {
         this._usageData = null;
         this._prefsData = null;
 
-        // Limits for free tier
-        this.FREE_DAILY_EVENTS = 10;
-        this.FREE_EXPORT_EVENTS = 2;
+        // Limits removed (unlocked personal use)
 
         // Initialize
         this._loadSession();
@@ -1560,56 +1556,25 @@ class SessionManager {
     }
 
     /**
-     * Check if there's an active session
+     * Check if there's an active session.
+     * UNLOCKED FOR PERSONAL USE: always true (no license required, no limits, no watermarks).
      */
     async hasActiveSession() {
-        if (!this._sessionData || !this._prefsData) return false;
-
-        // Update last seen timestamp
-        const now = new Date();
-        const lastSeen = this._prefsData.lastSeen ? new Date(this._prefsData.lastSeen) : null;
-
-        // Clock rollback detection (allow 24 hour tolerance)
-        if (lastSeen && now < lastSeen) {
-            const diffHours = (lastSeen - now) / (1000 * 60 * 60);
-            if (diffHours > 24) {
-                console.warn('Clock rollback detected');
-                // Don't invalidate, just warn
-            }
-        }
-
-        // Check expiry from stored prefs (quick check without full validation)
-        if (this._prefsData.expiry) {
-            const expiry = new Date(this._prefsData.expiry);
-            if (now > expiry) {
-                return false;
-            }
-        }
-
-        // Update last seen
-        this._prefsData.lastSeen = now.toISOString();
-        this._savePrefs();
-
         return true;
     }
 
     /**
-     * Get session info for display
+     * Get session info for display.
+     * UNLOCKED FOR PERSONAL USE: always returns an active licensed state.
      */
     getSessionInfo() {
-        if (!this._prefsData || !this._prefsData.expiry) {
-            return null;
-        }
-
-        const expiry = new Date(this._prefsData.expiry);
-        const now = new Date();
-        const daysRemaining = Math.ceil((expiry - now) / (1000 * 60 * 60 * 24));
-
+        // Always return "active" for unlocked personal use mode
+        const farFuture = new Date(Date.now() + 1000 * 60 * 60 * 24 * 365 * 10); // ~10 years
         return {
-            active: daysRemaining > 0,
-            expiryDate: expiry,
-            daysRemaining: Math.max(0, daysRemaining),
-            emailHash: this._prefsData.emailHash
+            active: true,
+            expiryDate: farFuture,
+            daysRemaining: 3650,
+            emailHash: null
         };
     }
 
@@ -1624,200 +1589,57 @@ class SessionManager {
     }
 
     /**
-     * Check if a feature is accessible
+     * Check if a feature is accessible.
+     * UNLOCKED FOR PERSONAL USE: always allowed (no limits, no premium gates).
      */
     async checkAccess(feature, contextId = null) {
-        try {
-            const hasSession = await this.hasActiveSession();
-
-            if (hasSession) {
-                return { allowed: true };
-            }
-
-            // Ensure usage data is loaded
-            if (!this._usageData) {
-                this._loadUsage();
-            }
-
-            // Free tier checks
-            switch (feature) {
-                case 'viewEvent': {
-                    const viewedList = this._usageData?.viewedToday || [];
-                    const viewedCount = viewedList.length;
-                    // Soft lockout: a free user who hits the daily cap can
-                    // still re-view ANY of the events they've already opened
-                    // today. New events get the limit modal; old ones go
-                    // through. Lets the user keep exploring features on
-                    // their existing 10 instead of being hard-banned the
-                    // moment they hit the cap.
-                    if (contextId && viewedList.includes(contextId)) {
-                        return {
-                            allowed: true,
-                            reviewed: true,
-                            remaining: Math.max(0, this.FREE_DAILY_EVENTS - viewedCount),
-                            limit: this.FREE_DAILY_EVENTS,
-                            type: 'daily'
-                        };
-                    }
-                    return {
-                        allowed: viewedCount < this.FREE_DAILY_EVENTS,
-                        remaining: this.FREE_DAILY_EVENTS - viewedCount,
-                        limit: this.FREE_DAILY_EVENTS,
-                        type: 'daily'
-                    };
-                }
-
-            case 'exportEvent': {
-                const exportedList = this._usageData?.exportedEvents || [];
-                const exportedCount = exportedList.length;
-                // Soft lockout (mirrors viewEvent): a free user past the
-                // daily export cap can still re-export any event they've
-                // already exported today. Re-exporting a watermarked event
-                // doesn't burn another slot — it just regenerates the same
-                // file. New events get the limit modal; old ones go through.
-                if (contextId && exportedList.includes(contextId)) {
-                    return {
-                        allowed: true,
-                        reviewed: true,
-                        remaining: Math.max(0, this.FREE_EXPORT_EVENTS - exportedCount),
-                        limit: this.FREE_EXPORT_EVENTS,
-                        type: 'export'
-                    };
-                }
-                return {
-                    allowed: exportedCount < this.FREE_EXPORT_EVENTS,
-                    remaining: this.FREE_EXPORT_EVENTS - exportedCount,
-                    limit: this.FREE_EXPORT_EVENTS,
-                    type: 'export'
-                };
-            }
-
-            case 'offlinePackage':
-            case 'plateEnhancement':
-                return {
-                    allowed: false,
-                    reason: 'premium',
-                    type: 'blocked'
-                };
-
-            default:
-                return { allowed: true };
-            }
-        } catch (e) {
-            console.error('[SessionManager] checkAccess error:', e);
-            return { allowed: true }; // Fail open to avoid blocking users
-        }
+        return { allowed: true };
     }
 
     /**
-     * Record that an event was viewed
+     * Record that an event was viewed.
+     * UNLOCKED FOR PERSONAL USE: always succeeds (no tracking).
      */
     async recordEventView(eventId) {
-        try {
-            const hasSession = await this.hasActiveSession();
-            if (hasSession) return true;
-
-            this._checkDailyReset();
-
-            // Ensure usage data exists
-            if (!this._usageData) this._loadUsage();
-            if (!this._usageData?.viewedToday) return true;
-
-            if (!this._usageData.viewedToday.includes(eventId)) {
-                if (this._usageData.viewedToday.length >= this.FREE_DAILY_EVENTS) {
-                    return false;
-                }
-                this._usageData.viewedToday.push(eventId);
-                this._saveUsage();
-            }
-            return true;
-        } catch (e) {
-            console.error('[SessionManager] recordEventView error:', e);
-            return true; // Fail open
-        }
+        return true;
     }
 
     /**
-     * Record that an event was exported
+     * Record that an event was exported.
+     * UNLOCKED FOR PERSONAL USE: always succeeds (no limits, no watermark flag).
      */
     async recordEventExport(eventId) {
-        try {
-            const hasSession = await this.hasActiveSession();
-            if (hasSession) return { allowed: true, watermark: false };
-
-            // Ensure usage data exists
-            if (!this._usageData) this._loadUsage();
-            if (!this._usageData?.exportedEvents) return { allowed: true, watermark: true };
-
-            // Check if this event was already used for export
-            if (this._usageData.exportedEvents.includes(eventId)) {
-                return { allowed: true, watermark: true };
-            }
-
-            // Check if we can add a new export event
-            if (this._usageData.exportedEvents.length >= this.FREE_EXPORT_EVENTS) {
-                return { allowed: false, watermark: true };
-            }
-
-            // Add to exported events
-            this._usageData.exportedEvents.push(eventId);
-            this._saveUsage();
-
-            return { allowed: true, watermark: true };
-        } catch (e) {
-            console.error('[SessionManager] recordEventExport error:', e);
-            return { allowed: true, watermark: true }; // Fail open with watermark
-        }
+        return { allowed: true, watermark: false };
     }
 
     /**
-     * Check if watermark should be applied
+     * Check if watermark should be applied.
+     * UNLOCKED FOR PERSONAL USE: always false (never apply watermarks).
      */
     async shouldWatermark() {
-        try {
-            return !(await this.hasActiveSession());
-        } catch (e) {
-            console.error('[SessionManager] shouldWatermark error:', e);
-            return true; // Default to watermark on error
-        }
+        return false;
     }
 
     /**
-     * Get usage stats for display
+     * Get usage stats for display.
+     * UNLOCKED: returns unlimited values (usage section is hidden anyway).
      */
     getUsageStats() {
-        this._checkDailyReset();
         return {
-            eventsViewedToday: this._usageData.viewedToday.length,
-            eventsLimit: this.FREE_DAILY_EVENTS,
-            eventsRemaining: this.FREE_DAILY_EVENTS - this._usageData.viewedToday.length,
-            exportsUsed: this._usageData.exportedEvents.length,
-            exportsLimit: this.FREE_EXPORT_EVENTS,
-            exportsRemaining: this.FREE_EXPORT_EVENTS - this._usageData.exportedEvents.length
+            eventsViewedToday: 0,
+            eventsLimit: 999,
+            eventsRemaining: 999,
+            exportsUsed: 0,
+            exportsLimit: 999,
+            exportsRemaining: 999
         };
     }
 
     /**
-     * Get expiry warning if applicable
+     * Get expiry warning if applicable.
+     * UNLOCKED FOR PERSONAL USE: never warn.
      */
     getExpiryWarning() {
-        const info = this.getSessionInfo();
-        if (!info || !info.active) return null;
-
-        if (info.daysRemaining <= 7) {
-            return {
-                level: 'urgent',
-                daysRemaining: info.daysRemaining,
-                message: `Session expires in ${info.daysRemaining} day${info.daysRemaining !== 1 ? 's' : ''}`
-            };
-        } else if (info.daysRemaining <= 14) {
-            return {
-                level: 'warning',
-                daysRemaining: info.daysRemaining,
-                message: `Session expires in ${info.daysRemaining} days`
-            };
-        }
-
         return null;
     }
 
@@ -2299,14 +2121,23 @@ class SessionManager {
         if (hasSession && info) {
             statusIcon.className = 'session-status-icon licensed';
             statusTitle.textContent = 'Licensed';
-            statusDesc.textContent = `${info.daysRemaining} days remaining`;
+            // Special handling for personal unlocked mode (very high daysRemaining)
+            if (info.daysRemaining > 1000) {
+                statusDesc.textContent = 'Personal use (unlimited)';
+            } else {
+                statusDesc.textContent = `${info.daysRemaining} days remaining`;
+            }
             usageSection.style.display = 'none';
             activateSection.style.display = 'none';
             licensedSection.style.display = 'block';
             activateBtn.textContent = 'Deactivate';
 
             const expirySpan = this._modal.querySelector('#sessionExpiry');
-            expirySpan.textContent = info.expiryDate.toLocaleDateString();
+            if (info.daysRemaining > 1000) {
+                expirySpan.textContent = 'Never';
+            } else {
+                expirySpan.textContent = info.expiryDate.toLocaleDateString();
+            }
         } else {
             statusIcon.className = 'session-status-icon free';
             statusTitle.textContent = 'Free Tier';

@@ -332,10 +332,11 @@ class VideoExport {
             });
         }
 
-        // HUD — only mirror if visible on live UI
+        // HUD — mirror if the element is visually present (for exact live match).
+        // If the export setting wants the HUD but live is hidden, we fall back
+        // to saved position inside renderToCanvas.
         const hudEl = document.querySelector('.telemetry-overlay');
-        if (hudEl && hudEl.offsetWidth > 0 && getComputedStyle(hudEl).display !== 'none'
-            && window.app?.telemetryOverlay?.isVisible !== false) {
+        if (hudEl && hudEl.offsetWidth > 0 && getComputedStyle(hudEl).display !== 'none') {
             const r = hudEl.getBoundingClientRect();
             mirror.hud = {
                 x: r.x - gridRect.x,
@@ -438,7 +439,8 @@ class VideoExport {
             exportStart, exportEnd, fps,
             totalFrames,
             includeOverlay,
-            videos
+            videos,
+            mirror: passedMirror, mirrorScaleX: passedMSX, mirrorScaleY: passedMSY
         } = params;
 
         if (!event) throw new Error('no currentEvent loaded for fast decoder');
@@ -467,14 +469,11 @@ class VideoExport {
         const settings = window.app?.settingsManager;
         const privacyMode = settings && settings.get('privacyModeExport') === true;
 
-        // Capture the live DOM's overlay layout ONCE at the start of export.
-        // This snapshot is the source of truth for where labels/HUD/mini-map
-        // go on the canvas, so export is a pixel-accurate mirror of what
-        // the user has on screen. Eliminates all the per-layout drift we
-        // kept hitting.
-        const mirror = this._captureLiveOverlayMirror();
-        const mirrorScaleX = mirror ? canvasWidth / mirror.grid.w : 1;
-        const mirrorScaleY = mirror ? canvasHeight / mirror.grid.h : 1;
+        // Use passed mirror (from outer exportFrameByFrame) if available for
+        // consistency; otherwise capture here.
+        const mirror = passedMirror || this._captureLiveOverlayMirror();
+        const mirrorScaleX = passedMSX || (mirror ? canvasWidth / mirror.grid.w : 1);
+        const mirrorScaleY = passedMSY || (mirror ? canvasHeight / mirror.grid.h : 1);
 
         // Create the streaming encoder up front — one encoder handles all frames,
         // no buffering between phases.
@@ -547,11 +546,6 @@ class VideoExport {
                     } catch (blurError) {
                         if (frameNum % 30 === 0) console.warn('[FastDecoder] Plate blur error:', blurError);
                     }
-                }
-
-                // Watermark (free tier)
-                if (this._shouldWatermark) {
-                    this.addWatermarksToFrame(renderCtx, layoutConfig);
                 }
 
                 // Camera labels — mirror live DOM labels onto the canvas at
@@ -631,18 +625,9 @@ class VideoExport {
             throw new Error('Export already in progress');
         }
 
-        // Free-tier gate: must run BEFORE any state mutation and BEFORE
-        // the GIF dispatch (so GIF inherits the same gate without
-        // double-checking). The cap was previously unenforced — UI
-        // flow goes through this path, not startExport, so the access
-        // check there never fired.
-        const accessOK = await this._checkExportAccess();
-        if (!accessOK) return;
-
         // Handle GIF export separately (forward singleCamera so GIF path also honors it).
-        // Pass _accessChecked so exportAsGif doesn't double-gate.
         if (format === 'gif') {
-            return this.exportAsGif({ ...options, singleCamera, _accessChecked: true });
+            return this.exportAsGif({ ...options, singleCamera });
         }
 
         console.log('Starting buffered frame-by-frame export...');
@@ -667,9 +652,6 @@ class VideoExport {
 
         // Pause any playback
         await this.videoPlayer.pause();
-
-        // Check if watermark is needed
-        await this._checkWatermark();
 
         // Calculate total duration
         if (!this.cachedTotalDuration) {
@@ -731,6 +713,12 @@ class VideoExport {
 
         // Pre-cache mini-map tiles (shared method)
         await this._preCacheMiniMapTiles(exportStart, exportEnd);
+
+        // Capture live DOM mirror for overlays (labels + HUD + mini-map positions).
+        // Done early so both fast and legacy paths can use it for 1:1 parity.
+        const mirror = this._captureLiveOverlayMirror();
+        const mirrorScaleX = mirror ? canvasWidth / mirror.grid.w : 1;
+        const mirrorScaleY = mirror ? canvasHeight / mirror.grid.h : 1;
 
         // Progress-bar split between Phase 1 (pre-render) and Phase 2 (encode).
         // Phase 1 is dominated by per-frame seeking, compositing, plate blur,
@@ -805,7 +793,8 @@ class VideoExport {
                     exportStart, exportEnd, fps,
                     totalFrames, frameInterval,
                     includeOverlay,
-                    videos
+                    videos,
+                    mirror, mirrorScaleX, mirrorScaleY
                 });
                 usedFastDecoder = !!fastBlob;
                 if (fastBlob) {
@@ -859,7 +848,7 @@ class VideoExport {
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            this._recordExportSuccess();
+
             this.isExporting = false;
             if (this.onProgress) this.onProgress(100, exportDuration, exportDuration);
             console.log('[FastDecoder] Export complete');
@@ -904,11 +893,6 @@ class VideoExport {
                     // Use centralized calculation for source/destination rectangles
                     const { sx, sy, sw, sh, dx, dy, dw, dh } = LayoutRenderer.calculateDrawParams(video, camConfig);
                     renderCtx.drawImage(video, sx, sy, sw, sh, dx, dy, dw, dh);
-                }
-
-                // Add watermarks for free tier users
-                if (this._shouldWatermark) {
-                    this.addWatermarksToFrame(renderCtx, layoutConfig);
                 }
 
                 // Apply license plate blurring if enabled - use multi-camera method for proper coordinate mapping
@@ -986,7 +970,9 @@ class VideoExport {
                 }
 
                 // Telemetry HUD and mini-map (shared with all export paths)
-                this._renderTelemetryAndMap(renderCtx, canvasWidth, canvasHeight, absoluteTime, { privacyMode });
+                this._renderTelemetryAndMap(renderCtx, canvasWidth, canvasHeight, absoluteTime, {
+                    privacyMode, mirror, mirrorScaleX, mirrorScaleY
+                });
 
                 // Store frame as ImageBitmap (more efficient than ImageData)
                 const bitmap = await createImageBitmap(renderCanvas);
@@ -1057,7 +1043,7 @@ class VideoExport {
                     a.click();
                     document.body.removeChild(a);
                     URL.revokeObjectURL(url);
-                    this._recordExportSuccess();
+        
 
                     for (const bitmap of frameBuffer) {
                         if (bitmap && typeof bitmap.close === 'function') bitmap.close();
@@ -1193,7 +1179,7 @@ class VideoExport {
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            this._recordExportSuccess();
+
 
             // Clean up frame buffer
             for (const bitmap of frameBuffer) {
@@ -1549,53 +1535,17 @@ class VideoExport {
     }
 
     /**
-     * Gate an export at start. Returns true to proceed, false if the
-     * limit modal was shown and the caller should bail out. Must be
-     * called from every public export entrypoint (exportFrameByFrame,
-     * startExport, exportAsGif) — the UI today only uses the first,
-     * and the cap was leaking because that path didn't check. Pass the
-     * current event's compoundKey so soft lockout (re-exports of
-     * already-exported events) still goes through.
+     * Gate an export at start (UNLOCKED: always allowed).
      */
     async _checkExportAccess() {
-        try {
-            const sessionManager = window.app?.sessionManager;
-            if (!sessionManager) return true;
-            const ev = this.videoPlayer?.currentEvent;
-            const exportContextId = ev?.compoundKey || ev?.name || null;
-            const access = await sessionManager.checkAccess('exportEvent', exportContextId);
-            if (!access.allowed) {
-                sessionManager.showLimitModal(access.type || 'export');
-                return false;
-            }
-            // Toast on first export of the day. Skip on already-counted
-            // re-exports (access.reviewed === true).
-            if (!access.reviewed && typeof window.app?._maybeShowExportWarning === 'function') {
-                window.app._maybeShowExportWarning(access);
-            }
-            return true;
-        } catch (e) {
-            console.warn('[VideoExport] checkAccess failed, allowing export:', e);
-            return true; // Fail open
-        }
+        return true;
     }
 
     /**
-     * Mark this event as exported in session usage. Must be called from
-     * every successful download branch — fast WebCodecs, buffered fast,
-     * MediaRecorder, GIF — or the free-tier export cap silently leaks
-     * (user could export unlimited times).
+     * Record export success (UNLOCKED: no-op).
      */
     _recordExportSuccess() {
-        try {
-            const sessionManager = window.app?.sessionManager;
-            if (!sessionManager) return;
-            const event = this.videoPlayer?.currentEvent;
-            const eventId = event?.compoundKey || event?.name || 'unknown';
-            sessionManager.recordEventExport(eventId);
-        } catch (e) {
-            console.warn('[VideoExport] Unable to record export:', e);
-        }
+        // no-op in unlocked mode
     }
 
     /**
@@ -1688,23 +1638,6 @@ class VideoExport {
         }
     }
 
-    // ==================== Session/Watermark Methods ====================
-
-    /**
-     * Check if watermarks should be applied (async, sets flag for render loop)
-     */
-    async _checkWatermark() {
-        const sessionManager = window.app?.sessionManager;
-        if (sessionManager) {
-            this._shouldWatermark = await sessionManager.shouldWatermark();
-            console.log('[VideoExport] _shouldWatermark set to:', this._shouldWatermark);
-        } else {
-            // No session manager, default to watermark
-            this._shouldWatermark = true;
-            console.log('[VideoExport] No sessionManager, defaulting _shouldWatermark to true');
-        }
-    }
-
     /**
      * Pre-cache mini-map tiles for export range
      * Shared setup used by all export methods to ensure map tiles render correctly
@@ -1714,7 +1647,8 @@ class VideoExport {
     async _preCacheMiniMapTiles(exportStart, exportEnd) {
         const settings = window.app?.settingsManager;
         const miniMapInExport = !settings || settings.get('miniMapInExport') !== false;
-        if (!window.app?.miniMapOverlay || !miniMapInExport) return;
+        const privacyMode = settings && settings.get('privacyModeExport') === true;
+        if (!window.app?.miniMapOverlay || !miniMapInExport || privacyMode) return;
 
         // The user must have the mini-map visible on screen (Show Mini-Map)
         // for it to appear in the export. Otherwise we'd include an overlay
@@ -1794,22 +1728,20 @@ class VideoExport {
      */
     _renderTelemetryAndMap(ctx, canvasWidth, canvasHeight, absoluteTime, options = {}) {
         const { privacyMode = false } = options;
-        if (privacyMode) return;
 
         const settings = window.app?.settingsManager;
         const hud = window.app?.telemetryOverlay;
         const map = window.app?.miniMapOverlay;
 
-        // Privacy mode strips all overlay data — strongest gate.
-        if (privacyMode) return;
-
-        // Independent visibility checks. Each overlay has its own live-UI
-        // toggle (overlay.isVisible) AND its own "include in export" setting.
-        // BOTH must be on for that overlay to bake into the export.
+        // Privacy Mode only strips sensitive data (GPS, timestamps, mini-map, etc.).
+        // The core driving HUD telemetry (speed, steering, signals, accel/decel)
+        // must remain if "Include in Exports" is enabled. Do not early-return the
+        // entire function on privacyMode.
         const hudEnabledInSettings = !settings || settings.get('telemetryOverlayInExport') !== false;
         const mapEnabledInSettings = !settings || settings.get('miniMapInExport') !== false;
-        const hudOn = !!hud && hud.isVisible !== false && hudEnabledInSettings && hud.hasTelemetryData?.();
-        const mapOn = !!map && map.isVisible !== false && mapEnabledInSettings;
+        const hudOn = !!hud && hudEnabledInSettings && hud.hasTelemetryData?.();
+        // Map (mini-map) is sensitive — skip entirely in Privacy Mode.
+        const mapOn = !!map && map.isVisible !== false && mapEnabledInSettings && !privacyMode;
 
         if (!hudOn && !mapOn) return;
 
@@ -1847,6 +1779,25 @@ class VideoExport {
             }
             hud.updateTelemetry(clipIndex, timeInClip, videoDuration);
             telemetryData = hud.getCurrentTelemetry();
+
+            // Robust fallback: if update didn't yield data for this exact time/clip
+            // (e.g. SEI not fully loaded for this clip, index calc edge, or live HUD
+            // was off so no prior currentData), pull directly from clip data so the
+            // HUD is reliably included whenever the export setting is enabled.
+            if (!telemetryData && hud.lastValidData) {
+                telemetryData = hud.lastValidData;
+            }
+            if (!telemetryData) {
+                const cacheKey = Array.from(hud.clipSeiData?.keys?.() || []).find(k => k.startsWith(`${clipIndex}_`));
+                const clipData = cacheKey ? hud.clipSeiData.get(cacheKey) : null;
+                if (clipData && clipData.frames && clipData.frames.length > 0) {
+                    const dur = videoDuration || clipData.duration || 60;
+                    const progress = dur > 0 ? Math.min(Math.max(0, timeInClip / dur), 1) : 0;
+                    let fi = Math.floor(progress * (clipData.frames.length - 1));
+                    fi = Math.max(0, Math.min(fi, clipData.frames.length - 1));
+                    telemetryData = clipData.frames[fi] || clipData.frames[0];
+                }
+            }
 
             if (telemetryData) {
                 const blinkState = Math.floor(absoluteTime * 2) % 2 === 0;
@@ -1901,76 +1852,13 @@ class VideoExport {
     }
 
     /**
-     * Check if branding should be shown in the banner overlay
-     * Licensed users can disable branding via settings; free users always see branding
+     * Check if branding should be shown in the banner overlay.
+     * Respects the user's "Show TeslaCamViewer.com branding" setting (unlocked mode).
      * @returns {boolean} True if branding should be shown
      */
     shouldShowBranding() {
-        // Free users always see branding — detected via _shouldWatermark, which is
-        // populated by _checkWatermark() at export start from sessionManager.shouldWatermark().
-        // (sessionManager has no hasValidLicense() method — that was a stale reference
-        // that always returned undefined, forcing branding on for Pro users too.)
-        if (this._shouldWatermark !== false) {
-            return true;
-        }
-
-        // Pro users can opt out via the "Show TeslaCamViewer.com branding" toggle
         const settings = window.app?.settingsManager;
         return settings?.get('showBrandingInExport') !== false;
-    }
-
-    /**
-     * Add watermarks to each camera in the frame
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {Object} layoutConfig
-     */
-    addWatermarksToFrame(ctx, layoutConfig) {
-        const watermarkText = 'TeslaCamViewer.com - Unlicensed';
-
-        if (layoutConfig && layoutConfig.cameras) {
-            for (const [cameraName, camConfig] of Object.entries(layoutConfig.cameras)) {
-                if (!camConfig.visible || camConfig.w <= 0 || camConfig.h <= 0) continue;
-                this.drawWatermarkOnRegion(ctx, camConfig.x, camConfig.y, camConfig.w, camConfig.h, watermarkText);
-            }
-        }
-    }
-
-    /**
-     * Draw diagonal watermark on a region
-     * @param {CanvasRenderingContext2D} ctx
-     * @param {number} x - Region x
-     * @param {number} y - Region y
-     * @param {number} w - Region width
-     * @param {number} h - Region height
-     * @param {string} text - Watermark text
-     */
-    drawWatermarkOnRegion(ctx, x, y, w, h, text) {
-        ctx.save();
-
-        // Move to center of region
-        const centerX = x + w / 2;
-        const centerY = y + h / 2;
-
-        ctx.translate(centerX, centerY);
-        ctx.rotate(-Math.PI / 6); // -30 degrees
-
-        // Calculate font size based on region size
-        const fontSize = Math.max(16, Math.min(w, h) / 12);
-        ctx.font = `bold ${fontSize}px Arial`;
-
-        // Measure text
-        const textMetrics = ctx.measureText(text);
-        const textWidth = textMetrics.width;
-
-        // Draw text shadow for better visibility
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-        ctx.fillText(text, -textWidth / 2 + 2, 2);
-
-        // Draw semi-transparent white text
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-        ctx.fillText(text, -textWidth / 2, 0);
-
-        ctx.restore();
     }
 
     // ==================== GIF Export Methods ====================
@@ -1986,8 +1874,7 @@ class VideoExport {
             endTime = null,
             includeOverlay = true,
             onProgress = null,
-            singleCamera = null,
-            _accessChecked = false
+            singleCamera = null
         } = options;
 
         const GIF_FPS = 20;  // Smoother motion — was 10, bumped for feel
@@ -1995,13 +1882,6 @@ class VideoExport {
         const GIF_QUALITY = 10;  // gif.js quality (1-30, lower is better)
 
         console.log('Starting GIF export...');
-
-        // Free-tier gate. Skipped when called via exportFrameByFrame
-        // since that path already gated us (avoids double-modal).
-        if (!_accessChecked) {
-            const accessOK = await this._checkExportAccess();
-            if (!accessOK) return;
-        }
 
         if (this.isExporting) {
             throw new Error('Export already in progress');
@@ -2111,9 +1991,6 @@ class VideoExport {
 
             // Pre-cache mini-map tiles (shared method)
             await this._preCacheMiniMapTiles(exportStart, exportEnd);
-
-            // Check watermark once
-            await this._checkWatermark();
 
             // Initialize gif.js
             const gif = new GIF({
@@ -2278,11 +2155,6 @@ class VideoExport {
                     mirrorScaleX: gifMScaleX, mirrorScaleY: gifMScaleY
                 });
 
-                // Add watermarks for free tier
-                if (this._shouldWatermark) {
-                    this.addWatermarksToFrame(ctx, layoutConfig);
-                }
-
                 // Scale down to GIF canvas
                 gifCtx.drawImage(canvas, 0, 0, gifWidth, gifHeight);
 
@@ -2329,7 +2201,7 @@ class VideoExport {
                     a.download = `TeslaCam_Export_${this.getFormattedTimestamp()}.gif`;
                     a.click();
                     URL.revokeObjectURL(url);
-                    this._recordExportSuccess();
+        
 
                     this.isExporting = false;
                     this.gifEncoder = null;

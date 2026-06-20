@@ -152,9 +152,6 @@ class InsuranceReport {
             this._reportProgress(95, 'Adding footer...');
             this._addFooter(doc);
 
-            // === WATERMARK FOR FREE TIER ===
-            await this._addWatermarkIfNeeded(doc);
-
             // Save PDF
             this._reportProgress(98, 'Generating PDF file...');
             const filename = this._generateFilename(event);
@@ -4159,80 +4156,6 @@ class InsuranceReport {
         const timeStr = date.toTimeString().slice(0, 5).replace(':', '-');
 
         return `TeslaCam_InsuranceReport_${dateStr}_${timeStr}.pdf`;
-    }
-
-    /**
-     * Add watermark to all pages if user is on free tier
-     * @param {jsPDF} doc
-     */
-    async _addWatermarkIfNeeded(doc) {
-        const sessionManager = window.app?.sessionManager;
-        if (!sessionManager) return;
-
-        const shouldWatermark = await sessionManager.shouldWatermark();
-        if (!shouldWatermark) return;
-
-        const totalPages = doc.internal.getNumberOfPages();
-        const watermarkText = 'TeslaCamViewer.com - Unlicensed';
-
-        // Seeded random number generator for consistent but varied placement
-        const seededRandom = (seed) => {
-            const x = Math.sin(seed * 9999) * 10000;
-            return x - Math.floor(x);
-        };
-
-        for (let i = 1; i <= totalPages; i++) {
-            doc.setPage(i);
-
-            // Get page dimensions
-            const pageWidth = doc.internal.pageSize.getWidth();
-            const pageHeight = doc.internal.pageSize.getHeight();
-
-            // Save graphics state
-            doc.saveGraphicsState();
-
-            // Set watermark style - semi-transparent red
-            doc.setGState(new doc.GState({ opacity: 0.15 }));
-            doc.setTextColor(200, 50, 50);
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(50);
-
-            // Swap direction per page - odd pages go one way, even pages the other
-            const baseAngle = (i % 2 === 0) ? 35 : -35;
-
-            // Add multiple diagonal watermarks with randomized positions
-            const baseSpacingY = 140;
-            const baseSpacingX = 320;
-            let seed = i * 1000; // Different seed per page
-
-            for (let row = -2; row < Math.ceil(pageHeight / baseSpacingY) + 2; row++) {
-                for (let col = -2; col < Math.ceil(pageWidth / baseSpacingX) + 3; col++) {
-                    seed++;
-
-                    // Add random offset to break up the grid pattern
-                    const randomOffsetX = (seededRandom(seed) - 0.5) * 80;
-                    const randomOffsetY = (seededRandom(seed + 500) - 0.5) * 60;
-                    const randomAngle = baseAngle + (seededRandom(seed + 1000) - 0.5) * 10;
-
-                    // Calculate base position
-                    let posX = col * baseSpacingX + randomOffsetX;
-                    let posY = row * baseSpacingY + randomOffsetY;
-
-                    // Stagger odd rows for more organic feel
-                    if (row % 2 === 1) {
-                        posX += baseSpacingX * 0.5;
-                    }
-
-                    // Only draw if within page bounds (with margin)
-                    if (posX > -150 && posX < pageWidth + 150 && posY > -30 && posY < pageHeight + 30) {
-                        doc.text(watermarkText, posX, posY, { angle: randomAngle });
-                    }
-                }
-            }
-
-            // Restore graphics state
-            doc.restoreGraphicsState();
-        }
     }
 }
 

@@ -46,6 +46,29 @@ class TelemetryOverlay {
         this.lastBlinkTime = 0;
         this.BLINK_INTERVAL = 500; // ms
 
+        // Custom steering wheel image asset (for Tesla silhouette)
+        // IMPORTANT: Place the image file at: assets/steering-wheel.png (relative to index.html)
+        //
+        // Recommendations:
+        // - Best format: PNG (with transparency). Why: Easier for detailed artistic Tesla wheel silhouette (curves, spokes, depth) vs complex SVG paths.
+        //   SVG alternative possible for perfect scalability but PNG preferred for fidelity + simple raster drawImage.
+        // - Resolution: 512x512 or 1024x1024 PNG. Provides crisp scaling in live (~28-50px) and high-res video exports (up to 4K+). Browser/canvas will downscale smoothly.
+        // - Sizing in code: drawn at radius-based size (see _drawSteeringWheelImage). Tune multiplier (2.1x) for match.
+        // - Rotation/centering: translate to (cx,cy), rotate, drawImage(-w/2, -h/2, w, h). Same logic for DOM CSS transform.
+        // - Performance: Image decoded once; drawImage() is fast/GPU accelerated. Negligible even in 30fps video export (thousands of frames).
+        // - Loading: Preloaded here; falls back to vector if missing (no crash). DOM <img> uses same path (caching shared).
+        // - For AP color: Image is neutral; vector fallback preserves blue rim. Design asset accordingly or extend with ctx globalAlpha/composite for tint.
+        this.steeringWheelImg = new Image();
+        this._steeringWheelLoaded = false;
+        this.steeringWheelImg.onload = () => {
+            this._steeringWheelLoaded = true;
+        };
+        this.steeringWheelImg.onerror = () => {
+            // Fallback to vector drawings if asset missing
+            console.warn('[TelemetryOverlay] Steering wheel asset not found at assets/steering-wheel.png - using built-in vector rendering');
+        };
+        this.steeringWheelImg.src = 'assets/steering-wheel.png';
+
 
         // SEI data cache per clip
         this.clipSeiData = new Map();
@@ -1353,6 +1376,12 @@ class TelemetryOverlay {
 
     _renderSteeringWheelColored(angle, color) {
         const clampedAngle = Math.max(-540, Math.min(540, angle));
+        if (this._steeringWheelLoaded && this.steeringWheelImg) {
+            // Use custom PNG/SVG asset for authentic Tesla silhouette.
+            // Size matches the 50x50 container in cockpit HUD.
+            // Rotation applied via CSS (live view). Asset should be pre-styled or use filters if tint needed.
+            return `<img src="assets/steering-wheel.png" alt="steering wheel" width="50" height="50" style="transform: rotate(${clampedAngle}deg); transition: transform 0.15s ease-out; image-rendering: crisp-edges;" />`;
+        }
         return `
             <svg viewBox="0 0 100 100" style="transform: rotate(${clampedAngle}deg); transition: transform 0.15s ease-out;">
                 <!-- Outer rim -->
@@ -1375,6 +1404,11 @@ class TelemetryOverlay {
     _renderSteeringWheel(angle) {
         // Clamp angle for visual (max ±540 degrees)
         const clampedAngle = Math.max(-540, Math.min(540, angle));
+
+        if (this._steeringWheelLoaded && this.steeringWheelImg) {
+            // Custom asset for live view (see notes in constructor)
+            return `<img src="assets/steering-wheel.png" alt="steering wheel" width="50" height="50" style="transform: rotate(${clampedAngle}deg); transition: transform 0.15s ease-out;" />`;
+        }
 
         return `
             <svg viewBox="0 0 100 100" style="transform: rotate(${clampedAngle}deg); transition: transform 0.15s ease-out;">
@@ -1622,10 +1656,6 @@ class TelemetryOverlay {
             ? Math.min(100, ((gForceY - 0.05) / 0.35) * 100)
             : 0;
 
-        // Autopilot active - steering wheel turns blue (only AUTOSTEER and FSD, not TACC)
-        const apActive = apState === 'AUTOSTEER' || apState === 'FSD';
-        const wheelColor = apActive ? '#0078ff' : '#666';
-
         return `
             <div class="tesla-pill" style="
                 background: rgba(30, 30, 30, 0.95);
@@ -1646,13 +1676,8 @@ class TelemetryOverlay {
                     align-items: center;
                     justify-content: center;
                 ">
-                    <svg viewBox="0 0 24 24" width="24" height="24" style="transform: rotate(${steeringAngle}deg);">
-                        <circle cx="12" cy="12" r="10" fill="none" stroke="${wheelColor}" stroke-width="2.5"/>
-                        <line x1="2" y1="12" x2="8" y2="12" stroke="${wheelColor}" stroke-width="2" stroke-linecap="round"/>
-                        <line x1="16" y1="12" x2="22" y2="12" stroke="${wheelColor}" stroke-width="2" stroke-linecap="round"/>
-                        <line x1="12" y1="16" x2="12" y2="22" stroke="${wheelColor}" stroke-width="2" stroke-linecap="round"/>
-                        <circle cx="12" cy="12" r="3" fill="${wheelColor}"/>
-                    </svg>
+                    <!-- Custom steering wheel image (falls back to vector if asset missing) -->
+                    <img src="assets/steering-wheel.png" width="24" height="24" style="transform: rotate(${steeringAngle}deg);" />
                 </div>
 
                 <!-- Left signal -->
@@ -1920,7 +1945,47 @@ class TelemetryOverlay {
         this._drawTurnSignal(ctx, currentX + 8, centerY, 'right', rightBlinker, true);
     }
 
+    /**
+     * Draw custom steering wheel image asset (if loaded).
+     * Handles scaling to match visual size of previous vector version, rotation, centering.
+     * Returns true if image was used, false to trigger vector fallback.
+     */
+    _drawSteeringWheelImage(ctx, cx, cy, radius, angle) {
+        if (!this._steeringWheelLoaded || !this.steeringWheelImg || !this.steeringWheelImg.complete) {
+            return false;
+        }
+        ctx.save();
+        ctx.translate(cx, cy);
+        ctx.rotate((angle * Math.PI) / 180);
+
+        // Enable high-quality smoothing to reduce aliasing/jagginess on the
+        // rotating PNG steering wheel (affects both live canvas renders and
+        // video export / screenshot canvases).
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = 'high';
+
+        // Scale image to approximate previous rim diameter (2 * radius).
+        // Tune multiplier for best visual match to original vector art.
+        // Base the draw size on radius for consistency across cockpit/mini styles.
+        const drawSize = radius * 2.1;
+        const img = this.steeringWheelImg;
+        const aspect = (img.height / img.width) || 1.0;
+        const drawW = drawSize;
+        const drawH = drawSize * aspect;
+
+        // Draw centered on the translated/rotated origin
+        ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+
+        ctx.restore();
+        return true;
+    }
+
     _drawSteeringWheelColored(ctx, cx, cy, radius, angle, color) {
+        // Try custom image asset first (see constructor for asset path and loading)
+        if (this._drawSteeringWheelImage(ctx, cx, cy, radius, angle)) {
+            return;
+        }
+
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate((angle * Math.PI) / 180);
@@ -2069,6 +2134,11 @@ class TelemetryOverlay {
     }
 
     _drawMiniSteeringWheel(ctx, cx, cy, radius, angle, color = '#666') {
+        // Try custom image asset first (see constructor for asset path and loading)
+        if (this._drawSteeringWheelImage(ctx, cx, cy, radius, angle)) {
+            return;
+        }
+
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate((angle * Math.PI) / 180);
@@ -2152,6 +2222,11 @@ class TelemetryOverlay {
     }
 
     _drawSteeringWheel(ctx, cx, cy, radius, angle) {
+        // Try custom image asset first (see constructor for asset path and loading)
+        if (this._drawSteeringWheelImage(ctx, cx, cy, radius, angle)) {
+            return;
+        }
+
         ctx.save();
         ctx.translate(cx, cy);
         ctx.rotate((angle * Math.PI) / 180);
