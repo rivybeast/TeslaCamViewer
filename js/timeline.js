@@ -6,7 +6,6 @@
 class Timeline {
     constructor(timelineElement, onSeek, onBookmarkChange = null) {
         this.timeline = timelineElement;
-        this._mcRef = 'teslacamviewer.com';
         this.progress = document.getElementById('timelineProgress');
         this.scrubber = document.getElementById('timelineScrubber');
         this.clipsContainer = document.getElementById('timelineClips');

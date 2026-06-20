@@ -512,9 +512,8 @@ class TeslaCamViewerApp {
                 'The File System Access API is disabled on insecure URLs.\n\n' +
                 'You\'re currently on:\n  ' + window.location.origin + '\n\n' +
                 'To select a drive, open one of:\n' +
-                '  • https://teslacamviewer.com\n' +
                 '  • http://localhost (or http://127.0.0.1)\n' +
-                '  • An HTTPS URL'
+                '  • An HTTPS URL (including your self-hosted fork)'
             );
             return;
         }
@@ -3841,8 +3840,7 @@ class TeslaCamViewerApp {
                         + 'This usually means the hardware encoder hung or Windows reset the graphics driver. '
                         + 'Try one of: lower the export resolution (Settings), disable plate blur for this export, '
                         + 'export a shorter time range using IN/OUT markers, or update your graphics driver.\n\n'
-                        + 'If it keeps happening, open Settings → Diagnostics → Console Log Capture and send us the log — '
-                        + 'we just added detailed encoder/decoder context to help support@teslacamviewer.com diagnose this.'
+                        + 'If it keeps happening, open Settings → Diagnostics → Console Log Capture and send the log to your support contact for diagnosis.'
                     );
                 } else {
                     alert('Export was unable to complete: ' + error.message);

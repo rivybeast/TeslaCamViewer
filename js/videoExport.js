@@ -829,9 +829,8 @@ class VideoExport {
                 `Export failed: ${fastPathError.message || fastPathError}\n\n` +
                 `Try this first: refresh the page (Ctrl+Shift+R) and retry the export. ` +
                 `Most encoder errors are transient WebCodecs state that a reload clears.\n\n` +
-                `If it still fails after a reload, please send the diagnostic log to ` +
-                `support@teslacamviewer.com — Settings → Diagnostics → Console Log Capture ` +
-                `has a Copy / Download button that includes the codec and dimensions we need.`
+                `If it still fails after a reload, please send the diagnostic log via Settings → Diagnostics → Console Log Capture ` +
+                `(has Copy/Download) to your support contact, including the codec and dimensions.`
             );
         }
 

@@ -1917,7 +1917,7 @@ class SessionManager {
                 this._showRecoverySuccess(result.daysRemaining);
             } else {
                 errorDiv.textContent = result.expired
-                    ? 'This license has expired. Please renew at teslacamviewer.com'
+                    ? 'This license has expired.'
                     : 'Email does not match the license on this drive';
                 errorDiv.style.display = 'block';
                 submitBtn.disabled = false;
