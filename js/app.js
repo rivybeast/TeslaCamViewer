@@ -155,7 +155,6 @@ class TeslaCamViewerApp {
         this.settingsBtn = document.getElementById('settingsBtn');
         this.helpBtn = document.getElementById('helpBtn');
         this.statsBtn = document.getElementById('statsBtn');
-        this.sessionBtn = document.getElementById('sessionBtn');
 
         // UI elements
         this.selectFolderBtn = document.getElementById('selectFolderBtn');
@@ -973,7 +972,6 @@ class TeslaCamViewerApp {
         this.settingsBtn.addEventListener('click', () => this.settingsManager.showSettingsModal());
         this.helpBtn.addEventListener('click', () => this.helpModal.show());
         this.statsBtn.addEventListener('click', () => this.statisticsManager.showModal());
-        this.sessionBtn.addEventListener('click', () => this.sessionManager.showSessionModal());
 
         // Camera visibility toggles
         this.setupCameraVisibilityControls();
@@ -5746,12 +5744,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     window.app = new TeslaCamViewerApp();
-
-    // Initialize session state (header button, expiry warnings)
-    if (window.app.sessionManager) {
-        window.app.sessionManager._updateHeaderButton();
-        window.app.sessionManager.showExpiryWarningIfNeeded();
-    }
 
     // Initialize plate enhancer (delayed and wrapped in try-catch)
     setTimeout(() => {

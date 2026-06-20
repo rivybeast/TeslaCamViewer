@@ -1913,7 +1913,6 @@ class SessionManager {
             const result = await this.recoverFromDrive(this._pendingDriveHandle, email);
 
             if (result.success) {
-                this._updateHeaderButton();
                 closeModal();
                 this._showRecoverySuccess(result.daysRemaining);
             } else {
@@ -2188,7 +2187,6 @@ class SessionManager {
                 // Update UI — await so the button flips to "Deactivate" before
                 // the success modal appears on top.
                 await this._updateModalContent();
-                this._updateHeaderButton();
 
                 // Clear inputs
                 codeInput.value = '';
@@ -2220,7 +2218,6 @@ class SessionManager {
         if (confirm('Are you sure you want to deactivate your license on this device?')) {
             this.deactivateSession();
             this._updateModalContent();
-            this._updateHeaderButton();
         }
     }
 
@@ -2401,25 +2398,6 @@ class SessionManager {
             }
         };
         document.addEventListener('keydown', handleEscape);
-    }
-
-    /**
-     * Update the header button based on session state
-     */
-    async _updateHeaderButton() {
-        const btn = document.getElementById('sessionBtn');
-        const text = document.getElementById('sessionBtnText');
-        if (!btn || !text) return;
-
-        const hasSession = await this.hasActiveSession();
-
-        if (hasSession) {
-            btn.classList.add('licensed');
-            text.textContent = 'Pro';
-        } else {
-            btn.classList.remove('licensed');
-            text.textContent = 'Free';
-        }
     }
 
     /**
