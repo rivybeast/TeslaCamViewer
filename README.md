@@ -1,3 +1,6 @@
+NOTE:  This fork is for personal use.  Please use the original- https://github.com/NateMccomb/TeslaCamViewer
+It's actually a very good package and worth the Pro license!  Just do it.
+
 # TeslaCam Viewer
 
 A powerful browser-based Tesla dashcam viewer with synchronized multi-angle playback, telemetry visualization, and comprehensive incident analysis tools. All processing happens locally - your video files never leave your computer.
