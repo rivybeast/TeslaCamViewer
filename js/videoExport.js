@@ -1,6 +1,7 @@
 /**
  * VideoExport - Exports video segments with multiple views
- * Codec: VP9/H264 adaptive, 30fps target
+ * MP4 path: always uses WebCodecs VideoEncoder ('avc1.*' / 'avc') + mp4-muxer for H.264.
+ * WebM path: uses MediaRecorder + VP9. Never emits VP9 inside MP4.
  */
 
 class VideoExport {
@@ -726,11 +727,11 @@ class VideoExport {
         // paths. Fast Export's Phase 2 is ~10% of wall time; MediaRecorder's
         // Phase 2 is typically ~25% because even at realtime capture, there's
         // no heavy per-frame work being done.
-        // Fast-export is now the default when WebCodecs is available (was
-        // previously opt-in via "fastExportExperimental" toggle). The toggle
-        // still exists as an emergency rollback but defaults to on.
-        const willUseFastExport = window.VideoExportFast?.isSupported()
-            && window.app?.settingsManager?.get('fastExportExperimental') !== false;
+        // For MP4 we force the WebCodecs path (H.264) when supported so the
+        // selected "MP4 (H.264)" option never emits VP9-in-MP4.
+        const willUseFastExport = window.VideoExportFast?.isSupported() &&
+            (format !== 'webm') &&
+            (format === 'mp4' || window.app?.settingsManager?.get('fastExportExperimental') !== false);
         const phase1PctMax = willUseFastExport ? 90 : 75;
 
         // Phase 1: Render all frames to ImageData buffer
@@ -762,9 +763,10 @@ class VideoExport {
         // or on any error mid-flight.
         //
         // Scope limits (take legacy path instead):
-        //   - singleCamera export (layout synthesis path, different wiring)
-        //   - WebM format (fast path emits MP4 only via mp4-muxer; WebM goes
-        //     through the legacy MediaRecorder + VP9 path)
+        //   - singleCamera export (layout synthesis path, different wiring;
+        //     still uses WebCodecs *encode* for MP4 via encodeFrames)
+        //   - WebM format (fast decoder+encoder path is MP4/H.264 only via
+        //     WebCodecs VideoEncoder; WebM uses legacy MediaRecorder + VP9)
         //
         // Plate blur runs cleanly on the fast path with the post-Apr-19
         // tracker code. The 2026.20.6.1 release process briefly gated the
@@ -995,20 +997,17 @@ class VideoExport {
             // Phase 2: Play back frames at correct timing and record
             console.log('Phase 2: Recording from buffer...');
 
-            // ----- Fast Export (Experimental) branch -----
-            // If the user has opted in AND WebCodecs is available, bypass MediaRecorder
-            // entirely and encode the already-rendered frame buffer directly via
-            // VideoEncoder + mp4-muxer. On any failure we fall through to the
-            // MediaRecorder path below, so this is always a strict upgrade.
-            // Fast encode is default-on — user must explicitly set the flag
-            // to false to opt out (emergency rollback path).
-            // Also skip when user asked for WebM — this path outputs MP4
-            // only (mp4-muxer), and bypassing it was the piece that let
-            // MP4 files slip through even after the outer fast-decoder
-            // gate was added.
-            const fastEnabled = window.app?.settingsManager?.get('fastExportExperimental') !== false
-                && format !== 'webm';
-            if (fastEnabled && window.VideoExportFast?.isSupported()) {
+            // ----- Fast Export / WebCodecs encode branch -----
+            // For MP4 we *force* the WebCodecs VideoEncoder + mp4-muxer path
+            // (when supported) to guarantee H.264/AVC ('avc1' codec strings) inside
+            // a proper MP4 container. Never fall back to VP9 or MediaRecorder for MP4.
+            // WebM always uses the legacy MediaRecorder + VP9 path.
+            // The fastExportExperimental flag only affects non-MP4 (or can be used
+            // as emergency rollback for MP4 via the legacy render path if needed).
+            const fastEnabled = format !== 'webm' &&
+                window.VideoExportFast?.isSupported() &&
+                (format === 'mp4' || window.app?.settingsManager?.get('fastExportExperimental') !== false);
+            if (fastEnabled) {
                 try {
                     console.log('[FastExport] Attempting WebCodecs-based encode...');
                     const wallStart = performance.now();

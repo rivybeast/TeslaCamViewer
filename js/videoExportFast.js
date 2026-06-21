@@ -1,15 +1,15 @@
 /**
- * VideoExportFast - Experimental faster-than-realtime video export
- * using WebCodecs VideoEncoder + mp4-muxer.
+ * VideoExportFast - faster-than-realtime video export using WebCodecs
+ * VideoEncoder + mp4-muxer (for MP4/H.264) or legacy for WebM.
+ *
+ * When export format=mp4, this is *forced* (if WebCodecs supported) so that
+ * the output is always proper H.264/AVC inside MP4 (codec 'avc1.*' to
+ * VideoEncoder, 'avc' to muxer). No VP9 fallback for MP4 path.
+ * WebM export path is unchanged (MediaRecorder VP9).
  *
  * Drop-in replacement for the MediaRecorder Phase-2 pass in videoExport.js.
  * Receives a pre-rendered frame buffer (ImageBitmap / HTMLCanvasElement) and
- * encodes directly to MP4 without going through a MediaStream, which
- * typically runs 5–10× faster than realtime since it's not bound to
- * wall-clock playback timing.
- *
- * Opt-in via Settings > Export > "Fast Export (Experimental)". Falls back
- * to the standard MediaRecorder path on any failure. tcv.0x465845
+ * encodes directly to MP4 without going through a MediaStream.
  */
 class VideoExportFast {
     /**
@@ -77,30 +77,17 @@ class VideoExportFast {
 
         const { Muxer, ArrayBufferTarget } = await this._loadMuxer();
 
-        // Codec preference order — VP9 first for QUALITY, H.264 second
-        // for COMPATIBILITY.
-        //
-        // Why VP9 first: H.264 (any profile) was producing visibly
-        // degraded mini-map detail on Windows Chrome — fine text/labels
-        // washed out, dark areas crushed — even at 80Mbps. The exact
-        // same canvas pixels encoded to VP9 (which the WebM export
-        // already does via MediaRecorder) look clean. VP9 is more
-        // efficient at preserving high-frequency detail at typical
-        // export bitrates, and mp4-muxer happily containers VP9 in MP4.
-        // Modern players (Chrome, Edge, Firefox, Safari Tech Preview,
-        // VLC, recent Quicktime, modern Premiere/Resolve/Final Cut)
-        // all play VP9-in-MP4 fine.
-        //
-        // Why H.264 as fallback: maximum compatibility for older
-        // players / older devices. Probe-encode will catch the case
-        // where VP9 isn't actually encodable on a given device.
+        // For MP4 (H.264) export path: force H.264/AVC via WebCodecs VideoEncoder.
+        // Use 'avc1.*' profile strings for VideoEncoder; 'avc' for mp4-muxer.
+        // Never include VP9 (vp09) or fall back for the MP4 path — WebM (VP9) is
+        // a separate export option using MediaRecorder. This guarantees a
+        // standard H.264/AVC MP4 container that X.com and other platforms accept.
         const candidates = [
-            { codec: 'vp09.00.10.08', name: 'vp9', muxName: 'VP9' },
             { codec: 'avc1.42E01F', name: 'avc', muxName: 'H.264 Baseline' },
             { codec: 'avc1.4D401F', name: 'avc', muxName: 'H.264 Main' },
             { codec: 'avc1.640028', name: 'avc', muxName: 'H.264 High' },
-            { codec: 'avc1.640033', name: 'avc', muxName: 'H.264 High L5.1' },
-            { codec: 'av01.0.04M.08', name: 'av1', muxName: 'AV1' }
+            { codec: 'avc1.640033', name: 'avc', muxName: 'H.264 High L5.1' }
+            // Only H.264/AVC for MP4. No vp09, no av01.
         ];
 
         // Probe each candidate codec by actually encoding a single frame —
@@ -285,16 +272,17 @@ class VideoExportFast {
         }
         const { Muxer, ArrayBufferTarget } = await this._loadMuxer();
 
-        // VP9 first for quality, H.264 second for compatibility — same
-        // ladder as the buffered encodeFrames path above. See that
-        // comment block for the rationale.
+        // For MP4 (H.264) export path: force H.264/AVC via WebCodecs VideoEncoder.
+        // Use 'avc1.*' profile strings for VideoEncoder; 'avc' for mp4-muxer.
+        // Never include VP9 (vp09) or fall back for the MP4 path — WebM (VP9) is
+        // a separate export option using MediaRecorder. This guarantees a
+        // standard H.264/AVC MP4 container that X.com and other platforms accept.
         const candidates = [
-            { codec: 'vp09.00.10.08', name: 'vp9', muxName: 'VP9' },
             { codec: 'avc1.42E01F', name: 'avc', muxName: 'H.264 Baseline' },
             { codec: 'avc1.4D401F', name: 'avc', muxName: 'H.264 Main' },
             { codec: 'avc1.640028', name: 'avc', muxName: 'H.264 High' },
-            { codec: 'avc1.640033', name: 'avc', muxName: 'H.264 High L5.1' },
-            { codec: 'av01.0.04M.08', name: 'av1', muxName: 'AV1' }
+            { codec: 'avc1.640033', name: 'avc', muxName: 'H.264 High L5.1' }
+            // Only H.264/AVC for MP4. No vp09, no av01.
         ];
         // Probe each candidate by actually encoding a single synthetic frame.
         // `isConfigSupported()` lies on some Chromium / GPU driver combos —

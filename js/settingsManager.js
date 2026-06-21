@@ -74,9 +74,10 @@ class SettingsManager {
             useWebCodecsPlayer: false,
 
             // Fast Export — WebCodecs VideoDecoder + VideoEncoder path.
-            // Now default on (was experimental). Set to false to force the
-            // legacy HTML5-seek + MediaRecorder path. Kept as an emergency
-            // rollback; the UI toggle that exposed this was removed.
+            // Now default on (was experimental). For MP4 exports, WebCodecs
+            // H.264 encoding is forced (regardless of this flag) to guarantee
+            // correct codec/container. Set false as emergency rollback for
+            // other paths / to force legacy MediaRecorder. UI toggle removed.
             fastExportExperimental: true,
 
             // Privacy Mode Export - strips identifying metadata from exports
